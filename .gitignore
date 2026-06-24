@@ -127,6 +127,7 @@ ICBHI_Challenge_demographic_information..txt
 ICBHI_Challenge_diagnosis.txt
 ICBHI_challenge_train_test.txt
 ICBHI_final_database/
+checkpoints/
 
 # Intermediate processed audio chunks
 processed_data/
