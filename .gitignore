@@ -137,3 +137,7 @@ processed_features/
 
 # Generated metadata index file
 metadata.csv
+
+# Exclude experiment JSON logs
+training_logs/*.json
+evaluation_results/*.json

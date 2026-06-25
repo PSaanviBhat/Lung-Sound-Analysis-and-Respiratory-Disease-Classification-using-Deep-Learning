@@ -5,9 +5,10 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 class LungSoundDataset(Dataset):
-    def __init__(self, metadata_file, split='train', val_ratio=0.2, random_seed=42, transform=None):
+    def __init__(self, metadata_file, split='train', val_ratio=0.2, random_seed=42, transform=None, channels_to_use=None):
         self.split = split
         self.transform = transform
+        self.channels_to_use = channels_to_use
         
         # Load metadata index
         df = pd.read_csv(metadata_file)
@@ -47,6 +48,10 @@ class LungSoundDataset(Dataset):
         # Load the pre-computed 3-channel tensor
         tensor = torch.load(file_path)
         
+        # Squeeze/slice active channels if defined
+        if self.channels_to_use is not None:
+            tensor = tensor[self.channels_to_use, :, :]
+            
         # Apply data augmentations (only for training)
         if self.split == 'train' and self.transform:
             tensor = self.transform(tensor)
@@ -91,11 +96,11 @@ def get_class_balanced_sampler(dataset):
     sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
     return sampler
 
-def get_dataloaders(metadata_file="metadata.csv", batch_size=32, num_workers=0):
+def get_dataloaders(metadata_file="metadata.csv", batch_size=32, num_workers=0, channels_to_use=None):
     # Instantiate training dataset with augmentations
-    train_dataset = LungSoundDataset(metadata_file, split='train', transform=SpecAugment())
-    val_dataset = LungSoundDataset(metadata_file, split='val')
-    test_dataset = LungSoundDataset(metadata_file, split='test')
+    train_dataset = LungSoundDataset(metadata_file, split='train', transform=SpecAugment(), channels_to_use=channels_to_use)
+    val_dataset = LungSoundDataset(metadata_file, split='val', channels_to_use=channels_to_use)
+    test_dataset = LungSoundDataset(metadata_file, split='test', channels_to_use=channels_to_use)
     
     # Balanced sampler for training to combat class imbalance
     train_sampler = get_class_balanced_sampler(train_dataset)
