@@ -1,6 +1,7 @@
 import os
 import urllib.request
 import torch
+import torchvision.models as models
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -239,6 +240,110 @@ class CNNLSTMPANN(nn.Module):
         # Classification
         logits_cycle = self.fc(final_state)
         
+        if self.multitask:
+            logits_pathology = self.fc_pathology(final_state)
+            return logits_cycle, logits_pathology
+            
+        return logits_cycle
+
+class BaselineCNNResNet(nn.Module):
+    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False):
+        super(BaselineCNNResNet, self).__init__()
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
+        self.resnet = models.resnet18(weights=weights)
+        self.multitask = multitask
+        
+        if in_channels != 3:
+            self.resnet.conv1 = nn.Conv2d(
+                in_channels, 
+                64, 
+                kernel_size=7, 
+                stride=2, 
+                padding=3, 
+                bias=False
+            )
+            
+        num_ftrs = self.resnet.fc.in_features
+        self.resnet.fc = nn.Linear(num_ftrs, num_classes)
+        
+        if multitask:
+            self.fc_pathology = nn.Linear(num_ftrs, 3)
+            
+    def forward(self, x):
+        if not self.multitask:
+            return self.resnet(x)
+            
+        x = self.resnet.conv1(x)
+        x = self.resnet.bn1(x)
+        x = self.resnet.relu(x)
+        x = self.resnet.maxpool(x)
+
+        x = self.resnet.layer1(x)
+        x = self.resnet.layer2(x)
+        x = self.resnet.layer3(x)
+        x = self.resnet.layer4(x)
+
+        x = self.resnet.avgpool(x)
+        x = torch.flatten(x, 1)
+        
+        logits_cycle = self.resnet.fc(x)
+        logits_pathology = self.fc_pathology(x)
+        return logits_cycle, logits_pathology
+
+class CNNLSTMResNet(nn.Module):
+    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False):
+        super(CNNLSTMResNet, self).__init__()
+        weights = models.ResNet18_Weights.DEFAULT if pretrained else None
+        resnet = models.resnet18(weights=weights)
+        self.multitask = multitask
+        
+        if in_channels != 3:
+            resnet.conv1 = nn.Conv2d(
+                in_channels, 
+                64, 
+                kernel_size=7, 
+                stride=2, 
+                padding=3, 
+                bias=False
+            )
+            
+        self.spatial_extractor = nn.Sequential(*list(resnet.children())[:-2])
+        
+        self.lstm = nn.LSTM(
+            input_size=512 * 4, 
+            hidden_size=256, 
+            num_layers=2, 
+            bidirectional=True, 
+            batch_first=True, 
+            dropout=0.3
+        )
+        
+        self.fc = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, num_classes)
+        )
+        
+        if multitask:
+            self.fc_pathology = nn.Sequential(
+                nn.Linear(512, 128),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(128, 3)
+            )
+            
+    def forward(self, x):
+        spatial_maps = self.spatial_extractor(x)
+        b, c, h, w = spatial_maps.shape
+        
+        seq_features = spatial_maps.permute(0, 3, 1, 2).contiguous()
+        seq_features = seq_features.view(b, w, c * h)
+        
+        lstm_out, _ = self.lstm(seq_features)
+        final_state = lstm_out[:, -1, :]
+        
+        logits_cycle = self.fc(final_state)
         if self.multitask:
             logits_pathology = self.fc_pathology(final_state)
             return logits_cycle, logits_pathology
