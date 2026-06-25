@@ -33,7 +33,7 @@ The table below compiles the final metrics achieved on the test split:
 
 The figure below shows the validation ICBHI Score convergence curves for the key experiments over the training epochs:
 
-![Validation Convergence Comparison](D:\Internship '26\Lung Disease\evaluation_results\validation_score_comparison.png)
+![Validation Convergence Comparison](evaluation_results\validation_score_comparison.png)
 
 ---
 
