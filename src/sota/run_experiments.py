@@ -16,7 +16,7 @@ from tqdm import tqdm
 from sklearn.metrics import classification_report, accuracy_score
 
 from dataset import get_dataloaders
-from models import BaselineCNNPANN, CNNLSTMPANN
+from models import BaselineCNNPANN, CNNLSTMPANN, BaselineCNNResNet, CNNLSTMResNet
 
 # Configurations mapping
 CONFIGS = {
@@ -384,7 +384,7 @@ def plot_curves(history, model_type, config_key, save_path):
 def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_rate=1e-4, patience=10, 
                    tune_only=False, eval_only=False, use_augmentations=True, 
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
-                   label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0):
+                   label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns'):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
@@ -392,18 +392,18 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     
     # Save SOTA checkpoints separately by using the _sota suffix
     suffix = "_sota_multitask" if multitask else "_sota"
-    checkpoint_name = f"{model_type}_config_{config_key}{suffix}.pth"
+    checkpoint_name = f"{model_type}_config_{config_key}_{backbone}{suffix}.pth"
     model_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
-    thresholds_path = os.path.join(CHECKPOINT_DIR, f"{model_type}_config_{config_key}{suffix}_thresholds.npy")
-    log_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}{suffix}_history.json")
-    plot_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}{suffix}_curves.png")
+    thresholds_path = os.path.join(CHECKPOINT_DIR, f"{model_type}_config_{config_key}_{backbone}{suffix}_thresholds.npy")
+    log_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}_{backbone}{suffix}_history.json")
+    plot_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}_{backbone}{suffix}_curves.png")
     
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     print(f"\n=======================================================")
-    print(f" RUNNING SOTA EXPERIMENT | Model: {model_type.upper()} | Config: {config_key} ({config_name})")
+    print(f" RUNNING SOTA EXPERIMENT | Model: {model_type.upper()} | Backbone: {backbone.upper()} | Config: {config_key} ({config_name})")
     print(f"=======================================================")
     print(f"Device: {DEVICE}")
     print(f"Input Channels: {in_channels} (Indices: {channels})")
@@ -420,10 +420,16 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     )
     
     pretrained = not (eval_only or tune_only)
-    if model_type == 'cnn':
-        model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
-    else:
-        model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+    if backbone == 'panns':
+        if model_type == 'cnn':
+            model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+        else:
+            model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+    else: # resnet
+        if model_type == 'cnn':
+            model = BaselineCNNResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+        else:
+            model = CNNLSTMResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
         
     if focal_gamma > 0:
         criterion = FocalLoss(gamma=focal_gamma)
@@ -550,7 +556,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         print("\n[Pathology Classification (Disease State)]:")
         print(f"  Accuracy    : {test_results['pathology']['accuracy']*100:.2f}%")
         
-    summary_path = os.path.join(OUTPUT_DIR, f"{model_type}_config_{config_key}{suffix}_results.json")
+    summary_path = os.path.join(OUTPUT_DIR, f"{model_type}_config_{config_key}_{backbone}{suffix}_results.json")
     with open(summary_path, 'w') as f:
         json.dump(test_results, f, indent=4)
     print(f"Results summary saved to {summary_path}")
@@ -574,6 +580,7 @@ def main():
     parser.add_argument('--focal_gamma', type=float, default=2.0, help='Focal loss gamma parameter (set 0.0 to use standard cross-entropy)')
     parser.add_argument('--multitask', action='store_true', help='Enable multi-task pathology classification')
     parser.add_argument('--pathology_weight', type=float, default=1.0, help='Weight factor for pathology loss')
+    parser.add_argument('--backbone', type=str, default='panns', choices=['panns', 'resnet'], help='Backbone network: panns or resnet')
     args = parser.parse_args()
     
     run_experiment(
@@ -592,7 +599,8 @@ def main():
         label_smoothing=args.label_smoothing,
         focal_gamma=args.focal_gamma,
         multitask=args.multitask,
-        pathology_weight=args.pathology_weight
+        pathology_weight=args.pathology_weight,
+        backbone=args.backbone
     )
 
 if __name__ == "__main__":
