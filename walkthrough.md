@@ -50,3 +50,40 @@ The figure below shows the validation ICBHI Score convergence curves for the key
 
 4. **Inference Latency**:
    - Both models run in under 8 ms per breathing cycle on the GPU, validating suitability for real-time edge deployment.
+
+---
+
+## 4. Phase 13: SOTA Data Augmentations & Mixup
+
+To address overfitting and encourage smoother decision boundaries, we implemented our SOTA training pipeline inside the separate directory [src/sota/](file:///d:/Internship%20'26/Lung%20Disease/src/sota/).
+
+### Spectrogram-Level Advanced Augmentations
+To avoid the raw audio feature extraction bottleneck (627 ms/sample), we implement GPU-friendly equivalents directly on the pre-computed 3-channel spectrogram tensors inside [dataset.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/dataset.py):
+*   **Time Shifting**: Circular roll along the time axis (width) by up to $\pm 10\%$ ($\pm 12$ pixels, corresponding to $\approx 280\text{ ms}$).
+*   **Frequency (Pitch) Shifting**: Circular roll along the frequency axis (height) by up to $\pm 2$ bins.
+*   **White Noise Injection**: Injecting random Gaussian noise ($\sigma \le 0.03$) directly onto spectrogram magnitude maps.
+*   **SpecAugment**: Zeroing out frequency blocks (max size 15 bins) and time blocks (max size 15 frames).
+
+We verified the augmentations using a visual sanity check script. Below is the saved visualization comparing original vs. augmented spectrogram features (Mel, CQT, CWT):
+
+![Augmentation Visual Check](evaluation_results/test_sota_augment.png)
+
+### Mixup Regularization
+In the training loop of [run_experiments.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/run_experiments.py), we implemented Mixup. For each batch:
+*   We sample a mixup weight $\lambda \sim \text{Beta}(0.2, 0.2)$.
+*   We mix batch inputs: $x_{\text{mix}} = \lambda x_1 + (1-\lambda) x_2$.
+*   We convert targets to one-hot and mix them: $y_{\text{mix}} = \lambda y_1 + (1-\lambda) y_2$.
+*   We compute cross-entropy loss directly against these soft target distributions.
+
+### Verification Run Results (3 Epochs)
+We verified the complete pipeline with a 3-epoch dry run using the CNN model under Stacked Config D:
+```bash
+python src/sota/run_experiments.py --model cnn --config D --epochs 3 --batch_size 32 --mixup
+```
+*   **Epoch 1**: Train Loss: 1.3244 | Train Acc: 35.41% | Val Loss: 1.2826 | Val Acc: 36.36%
+*   **Epoch 3**: Train Loss: 1.0611 | Train Acc: 45.87% | Val Loss: 1.1486 | Val Acc: 46.56%
+*   **Optimal Thresholds sweep**: validation score calibrated to **50.04%**.
+*   **Test split results**: Calibrated accuracy **50.62%**, ICBHI score **46.95%** (on only 3 epochs of training).
+
+This confirms that the SOTA training pipeline executes correctly, saves checkpoints under separate paths (e.g. `checkpoints/cnn_config_D_sota.pth`), and evaluates test metrics without issue.
+
