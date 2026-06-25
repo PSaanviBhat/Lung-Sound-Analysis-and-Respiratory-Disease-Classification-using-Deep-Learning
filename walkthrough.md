@@ -87,3 +87,39 @@ python src/sota/run_experiments.py --model cnn --config D --epochs 3 --batch_siz
 
 This confirms that the SOTA training pipeline executes correctly, saves checkpoints under separate paths (e.g. `checkpoints/cnn_config_D_sota.pth`), and evaluates test metrics without issue.
 
+---
+
+## 5. Phase 14: SOTA Loss Function Upgrade
+
+To address class imbalance and regularize predictions, we upgraded our SOTA loss functions inside [run_experiments.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/run_experiments.py).
+
+### Multiclass Focal Loss
+We implemented a custom PyTorch module `FocalLoss` that calculates:
+$$L_{\text{focal}} = -\sum_{c=1}^{C} y_c \cdot (1 - p_c)^\gamma \cdot \log(p_c)$$
+*   **Gamma ($\gamma = 2.0$)**: Down-weights easy "Normal" samples (where $p_c \to 1$) and scales up gradients for hard/rare abnormal classes.
+*   **Soft Targets Compatibility**: Designed to accept both 1D target classes and 2D target probability distributions, allowing seamless composition with Mixup and Label Smoothing.
+
+We verified it with an isolated test script:
+```bash
+python C:\Users\psaan\.gemini\antigravity\brain\b6b4ba09-9d6e-4837-beb0-45f22e883648\scratch\test_focal_loss.py
+```
+*(All tests passed successfully, confirming exact equivalence to standard cross-entropy when $\gamma=0$, and proper $0.0271$ easy-to-hard ratio scaling when $\gamma=2.0$).*
+
+### Label Smoothing
+We smooth ground truth targets by a factor of $\epsilon = 0.1$:
+$$y_{\text{smoothed}} = y \cdot (1 - 0.1) + \frac{0.1}{4}$$
+This regularizes predictions, prevents the model from assigning $100\%$ confidence to a single class, and improves boundary calibration.
+
+### Verification Run Results (3 Epochs)
+We ran a 3-epoch dry run using the Stacked features (Config D) CNN with Mixup, Label Smoothing ($\epsilon=0.1$), and Focal Loss ($\gamma=2.0$) enabled:
+```bash
+python src/sota/run_experiments.py --model cnn --config D --epochs 3 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0
+```
+*   **Epoch 1**: Train Loss: 0.7783 | Train Acc: 32.54% | Val Loss: 1.0496 | Val Acc: 23.50%
+*   **Epoch 3**: Train Loss: 0.6215 | Train Acc: 40.99% | Val Loss: 0.5958 | Val Acc: 46.78%
+*   **Optimal Thresholds sweep**: validation score calibrated to **55.16%** (demonstrating faster convergence compared to the 50.04% score without Focal Loss).
+*   **Test split results**: Calibrated accuracy **47.86%**, ICBHI score **44.63%** (on only 3 epochs of training).
+
+This verifies that Focal Loss and Label Smoothing integrate perfectly with Mixup and early stopping checkpoint serialization.
+
+

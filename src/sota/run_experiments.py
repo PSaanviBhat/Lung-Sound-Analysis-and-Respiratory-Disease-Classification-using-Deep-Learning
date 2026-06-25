@@ -30,6 +30,36 @@ CHECKPOINT_DIR = "checkpoints"
 LOG_DIR = "training_logs"
 OUTPUT_DIR = "evaluation_results"
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        log_probs = torch.log_softmax(inputs, dim=1)
+        probs = torch.exp(log_probs)
+        
+        if targets.dim() == 1:
+            targets = torch.nn.functional.one_hot(targets, num_classes=inputs.size(1)).float()
+            
+        focal_weight = (1.0 - probs) ** self.gamma
+        loss = -targets * focal_weight * log_probs
+        
+        if self.alpha is not None:
+            alpha = self.alpha.to(inputs.device)
+            loss = loss * alpha.unsqueeze(0)
+            
+        loss = torch.sum(loss, dim=1)
+        
+        if self.reduction == 'mean':
+            return torch.mean(loss)
+        elif self.reduction == 'sum':
+            return torch.sum(loss)
+        else:
+            return loss
+
 class EarlyStopping:
     def __init__(self, patience=10, verbose=True, delta=0):
         self.patience = patience
@@ -82,7 +112,7 @@ def calculate_icbhi_score(y_true, y_pred):
     
     return sensitivity, specificity, icbhi_score
 
-def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_alpha=0.2, mixup_prob=0.8):
+def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_alpha=0.2, mixup_prob=0.8, label_smoothing_factor=0.1):
     model.train()
     running_loss = 0.0
     all_preds = []
@@ -102,15 +132,17 @@ def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_
             mixed_x = lam * batch_x + (1.0 - lam) * batch_x[index]
             y_a = torch.nn.functional.one_hot(batch_y, num_classes=4).float()
             y_b = torch.nn.functional.one_hot(batch_y[index], num_classes=4).float()
-            mixed_y = lam * y_a + (1.0 - lam) * y_b
-            
-            with autocast():
-                outputs = model(mixed_x)
-                loss = criterion(outputs, mixed_y)
+            targets = lam * y_a + (1.0 - lam) * y_b
         else:
-            with autocast():
-                outputs = model(batch_x)
-                loss = criterion(outputs, batch_y)
+            mixed_x = batch_x
+            targets = torch.nn.functional.one_hot(batch_y, num_classes=4).float()
+            
+        if label_smoothing_factor > 0:
+            targets = targets * (1.0 - label_smoothing_factor) + (label_smoothing_factor / 4.0)
+            
+        with autocast():
+            outputs = model(mixed_x)
+            loss = criterion(outputs, targets)
             
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -261,7 +293,8 @@ def plot_curves(history, model_type, config_key, save_path):
 
 def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_rate=1e-4, patience=10, 
                    tune_only=False, eval_only=False, use_augmentations=True, 
-                   mixup=False, mixup_alpha=0.2, mixup_prob=0.8):
+                   mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
+                   label_smoothing=0.1, focal_gamma=2.0):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
@@ -284,6 +317,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     print(f"Device: {DEVICE}")
     print(f"Input Channels: {in_channels} (Indices: {channels})")
     print(f"SOTA Augmentations: {use_augmentations} | Mixup: {mixup} (alpha={mixup_alpha}, prob={mixup_prob})")
+    print(f"Label Smoothing: {label_smoothing} | Focal Loss Gamma: {focal_gamma}")
     
     print("Loading dataloaders...")
     train_loader, val_loader, test_loader = get_dataloaders(
@@ -297,7 +331,10 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     else:
         model = CNNLSTM(in_channels=in_channels, num_classes=4).to(DEVICE)
         
-    criterion = nn.CrossEntropyLoss()
+    if focal_gamma > 0:
+        criterion = FocalLoss(gamma=focal_gamma)
+    else:
+        criterion = nn.CrossEntropyLoss()
     
     if not (eval_only or tune_only):
         print(f"Initializing Adam optimizer (lr={learning_rate}) and CosineAnnealingLR...")
@@ -316,7 +353,8 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         for epoch in range(1, epochs + 1):
             train_loss, train_acc, train_score = train_epoch(
                 model, train_loader, criterion, optimizer, scaler,
-                mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob
+                mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob,
+                label_smoothing_factor=label_smoothing
             )
             val_loss, val_acc, val_se, val_sp, val_score, _, _ = validate(model, val_loader, criterion)
             
@@ -401,6 +439,8 @@ def main():
     parser.add_argument('--mixup', action='store_true', help='Enable Mixup data augmentation')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Mixup alpha parameter')
     parser.add_argument('--mixup_prob', type=float, default=0.8, help='Mixup probability per batch')
+    parser.add_argument('--label_smoothing', type=float, default=0.1, help='Label smoothing factor')
+    parser.add_argument('--focal_gamma', type=float, default=2.0, help='Focal loss gamma parameter (set 0.0 to use standard cross-entropy)')
     args = parser.parse_args()
     
     run_experiment(
@@ -415,7 +455,9 @@ def main():
         use_augmentations=args.use_augmentations,
         mixup=args.mixup,
         mixup_alpha=args.mixup_alpha,
-        mixup_prob=args.mixup_prob
+        mixup_prob=args.mixup_prob,
+        label_smoothing=args.label_smoothing,
+        focal_gamma=args.focal_gamma
     )
 
 if __name__ == "__main__":
