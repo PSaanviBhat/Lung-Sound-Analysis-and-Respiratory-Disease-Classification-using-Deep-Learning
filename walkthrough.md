@@ -1,4 +1,4 @@
-# Walkthrough — Advanced Ablation & Calibration Experiments
+# Walkthrough ï¿½ Advanced Ablation & Calibration Experiments
 
 This document summarizes the results of the 8 different ablation study experiments, evaluating the effect of multi-branch feature fusion (Mel Spectrogram, Constant-Q Transform, and Continuous Wavelet Transform) and probability decision threshold calibration.
 
@@ -24,7 +24,15 @@ This document summarizes the results of the 8 different ablation study experimen
 | Proposed CNN-LSTM | Config D (Stacked (All)) | Calibrated (Tuned) | 51.85% | 25.95% | 70.55% | 48.25% | 3.15 ms |
 
 
-## Key Findings
+## 2. Validation Convergence Analysis
+
+The figure below shows the validation ICBHI Score convergence curves for the key experiments over the training epochs:
+
+![Validation Convergence Comparison](evaluation_results\validation_score_comparison.png)
+
+---
+
+## 3. Key Findings
 
 1. **Ablation Performance (Feature Fusion)**:
    - **Mel-only (Config A)** serves as the baseline feature.
