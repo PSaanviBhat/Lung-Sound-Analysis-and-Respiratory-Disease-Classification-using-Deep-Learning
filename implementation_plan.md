@@ -1,103 +1,98 @@
-# Implementation Plan — Lung Sound Analysis & Respiratory Disease Classification
+# Implementation Plan — SOTA Optimization & Directory Restructuring
 
-This document outlines a phase-wise, 14-day implementation plan tailored for execution on a consumer laptop equipped with an **NVIDIA RTX 3050 6GB GPU**, running PyTorch, Librosa, and associated scientific Python packages.
+This document outlines the organization and advanced optimization roadmap. To prepare for implementing advanced techniques (Focal Loss, Mixup, PANNs backbones, and Multi-task learning), we will first restructure the repository to separate legacy baseline scripts from the new experimental pipeline.
 
 ---
 
 ## User Review Required
 
 > [!IMPORTANT]
-> **GPU VRAM Constraint (6GB)**: We must avoid large neural network backbones (such as ResNet-50/101 or Vision Transformers) and keep training batch sizes to $16$ or $32$ to prevent Out-Of-Memory (OOM) crashes.
+> **Unified `src/` Layout Import Resolution**: Moving code files into subdirectories (`src/baselines/` and `src/experiments/`) changes Python's import context. We must add parent-directory path injections (`sys.path.append`) to the sub-folder scripts so they can import core data modules (like `dataset.py`) from the parent `src/` directory without breaking.
 > 
-> **Subject-Level Split**: To ensure clinical validity, the dataset split *must* be structured at the subject level. Do not perform random cycle splits, as this leaks patient data and invalidates test results.
-> 
-> **Offline Feature Cache**: Computing Continuous Wavelet Transforms (CWT) during the training dataloader loop is computationally intensive. We must pre-compute and serialize all features to disk as `.pt` tensors to speed up training.
+> **Running Commands**: Scripts must always be run from the repository root directory (e.g., `d:\Internship '26\Lung Disease`), which keeps generated metadata, checkpoints, and logs located at the root level.
 
 ---
 
 ## Proposed Phase-Wise Plan
 
-### Phase 1: Environment Setup & Raw Data Ingestion (Days 1–2)
-Establish a robust, reproducible Python virtual environment and set up the dataset repository.
+### Phase 12: Directory Restructuring & Organization (Days 1-2)
+Restructure all files into a unified `src/` folder divided into `baselines/` and `experiments/` subfolders.
+*   **Target Directory Structure**:
+    ```text
+    ├── baselines/                         # Legacy SVM, CNN, and CNN-LSTM baselines
+    │   ├── train_baseline_svm.py
+    │   ├── train_baseline_cnn.py
+    │   ├── train_hybrid_model.py
+    │   └── evaluate_models.py
+    ├── experiments/                       # Active pipeline scripts (runner, curves, models)
+    │   ├── models.py
+    │   ├── run_experiments.py
+    │   ├── run_all_experiments.py
+    │   └── plot_comparison_curves.py
+    ├── dataset.py                         # Core PyTorch dataset & augmentations
+    ├── preprocess.py                      # Resampling & segmentation pipeline
+    ├── extract_features.py                # Time-frequency feature extraction
+    ```
 *   **Tasks**:
-    *   Set up a Python 3.10 virtual environment and install PyTorch (with CUDA 11.8/12.1 support), `librosa`, `soundfile`, `pywt` (PyWavelets), `scikit-learn`, `matplotlib`, and `pandas`.
-    *   Download and extract the **ICBHI 2017 Respiratory Sound Database**.
-    *   Write a parser to link audio `.wav` files with their cycle annotation `.txt` files (containing onset, offset, crackle, and wheeze markers) and subject metadata.
-*   **Laptop Optimization**: Keep raw data compressed; write clean path mapping scripts to avoid copying files repeatedly.
+    *   Create the directories: `src/`, `src/baselines/`, `src/experiments/`.
+    *   Move core utilities to `src/` (`preprocess.py`, `extract_features.py`, `dataset.py`).
+    *   Move baseline scripts to `src/baselines/`.
+    *   Move experiments and active model code to `src/experiments/`.
+    *   Update baseline and experiment scripts to prepend `src/` to `sys.path` dynamically.
+    *   Update `.gitignore` to reflect the new paths.
+*   **Verification**: Run a validation check of `src/experiments/run_experiments.py --eval_only` to verify all imports and configurations function.
 
 ---
 
-### Phase 2: Preprocessing & Segmentation Pipeline (Days 3–4)
-Filter noise from the raw waveforms and segment continuous recordings into individual breathing cycles.
+### Phase 13: Data Augmentation Enhancements (Days 3-4)
+Implement Mixup and waveform-level augmentations to reduce overfitting and smooth decision boundaries.
 *   **Tasks**:
-    *   Implement standard resampling to a uniform sampling rate (e.g., $16\,\text{kHz}$ or $4\,\text{kHz}$ depending on high-frequency analysis requirements).
-    *   Apply a 4th-order Butterworth bandpass filter ($100\,\text{Hz} - 2000\,\text{Hz}$) to eliminate muscle movement and ambient noise.
-    *   Segment raw audio into individual respiratory cycles using the parsed timestamps.
-    *   Pad/truncate all segmented cycles to a uniform duration of $3.0\,\text{s}$ (using zero-padding or cyclic replication).
-*   **Laptop Optimization**: Use vectorization in NumPy/Scipy to speed up CPU filtering.
+    *   **Audio Mixup**: Implement Mixup for stacked feature tensors in the training loop. Mix pairs of inputs $x = \lambda x_1 + (1-\lambda) x_2$ and their labels $y = \lambda y_1 + (1-\lambda) y_2$.
+    *   **On-the-Fly Waveform Augmentations**: Implement waveform-level perturbations in `dataset.py` (applied before time-frequency transform):
+        *   Random time-shifting ($\pm 100\text{ ms}$).
+        *   White Gaussian noise injection (SNR range: $15\text{ dB} - 30\text{ dB}$).
+        *   Pitch shifting ($\pm 2$ semitones) and time-stretching ($0.9 - 1.1\times$).
+*   **Verification**: Run dataloader test script to verify mixed inputs and check that targets sum to 1.0.
 
 ---
 
-### Phase 3: Multi-Branch Feature Extraction & Offline Serialization (Days 5–6)
-Extract distinct time-frequency representations tailored for different disease classes.
+### Phase 14: Loss Function Upgrade (Day 5)
+Incorporate specialized loss functions to address the severe class imbalance.
 *   **Tasks**:
-    *   **Branch 1 (Mel Spectrogram)**: Extract standard time-frequency maps (e.g., 128 Mel bands).
-    *   **Branch 2 (Constant-Q Transform - CQT)**: Extract log-frequency representations, optimizing low-frequency resolution for continuous wheeze harmonics.
-    *   **Branch 3 (Continuous Wavelet Transform - CWT)**: Extract scale-based scalograms using a Morlet or Mexican Hat mother wavelet, optimizing time resolution for transient crackles.
-    *   Resize all extracted feature matrices to a standard grid size (e.g., $128 \times 128$) and stack them into a 3-channel tensor of shape $(3, 128, 128)$.
-    *   Serialize these tensors directly to disk as `.pt` binary files grouped by patient ID.
-*   **Laptop Optimization**: Pre-computing features offline avoids redundant CPU transform calculations during GPU training, accelerating training speeds.
+    *   **Multiclass Focal Loss**: Implement Focal Loss to down-weight easy "Normal" samples and scale up focus on rare crackles/wheezes/both classes:
+        $$L_{\text{focal}} = -\alpha (1 - p_t)^\gamma \log(p_t)$$
+    *   **Label Smoothing**: Add label smoothing to target vectors to prevent model overconfidence and improve decision boundary calibration.
+*   **Verification**: Compare a 5-epoch run using standard cross-entropy vs. Focal Loss to confirm that the model predicts rare classes more frequently.
 
 ---
 
-### Phase 4: Custom PyTorch Data Loading & Augmentation (Days 7–8)
-Develop clean dataloaders that handle stacked tensor inputs and class imbalance.
+### Phase 15: Pretrained Audio Backbones Integration (Days 6-7)
+Replace the ImageNet-pretrained ResNet-18 with an audio-pretrained feature extractor.
 *   **Tasks**:
-    *   Write a custom `Dataset` class that reads the pre-computed `.pt` tensors from disk.
-    *   Implement **Subject-Level Split** partitioning (60% Train, 20% Val, 20% Test) using patient ID codes.
-    *   Add training augmentations directly in PyTorch: random frequency masking, time masking (SpecAugment), and adding low-amplitude White Gaussian Noise.
-    *   Implement a weighted data sampler (`WeightedRandomSampler`) or compute loss weights to address the severe dataset class imbalance (e.g., the high volume of COPD samples relative to other pathologies).
+    *   **PANNs (Pretrained Audio Neural Networks)**: Integrate a CNN14 or MobileNetV2 backbone pretrained on AudioSet.
+    *   Modify input convolutional layers to accept custom-channeled stacked tensors (1, 2, or 3 channels depending on ablation configuration).
+    *   Align sequence representation output dimensionality for the BiLSTM sequence modeling layer.
+*   **Verification**: Run forward-pass validation checking that output tensor dimensions align with targets.
 
 ---
 
-### Phase 5: Baseline Model Development (Days 9–10)
-Establish classical and deep learning baseline models to measure progress.
+### Phase 16: Multi-Task Learning Framework (Days 8-9)
+Leverage clinical metadata (patient diagnoses) to guide acoustic feature representation.
 *   **Tasks**:
-    *   **Baseline 1 (SVM)**: Flatten CQT/MFCC maps into 1D mean/variance vectors and train a Support Vector Machine classifier.
-    *   **Baseline 2 (CNN)**: Adapt a standard ResNet-18 model. Modify the input layer to accept 3-channel stacked tensors and change the output layer to class-wise probability distributions.
-    *   Train both baselines, track their training curves, and save their best validation weights.
-*   **Laptop Optimization**: Enable mixed-precision training (`torch.cuda.amp`) to reduce VRAM consumption and speed up training on the RTX 3050.
-
----
-
-### Phase 6: Proposed Hybrid Spatio-Temporal Model (Days 11–12)
-Implement the core neural network combining spatial feature extraction with sequence modeling.
-*   **Tasks**:
-    *   Build a hybrid network (CNN-LSTM) where the ResNet-18 model acts as a feature extractor (removing its final classification head).
-    *   Project the 2D spatial feature maps along the time axis to create a sequence of vectors.
-    *   Pass this sequence through a Bidirectional LSTM (BiLSTM) layer to capture temporal transitions in the respiration cycle.
-    *   Add a fully connected output layer to predict both anomaly categories (Healthy vs. Crackle vs. Wheeze vs. Both) and disease pathologies.
-*   **Laptop Optimization**: Freeze the early convolutional layers of the ResNet-18 backbone (Transfer Learning) to reduce backpropagation overhead and protect VRAM.
-
----
-
-### Phase 7: Diagnostic Metrics Evaluation & Comparison (Days 13–14)
-Evaluate model performance against project requirements.
-*   **Tasks**:
-    *   Calculate confusion matrices, class-wise F1-scores, Sensitivity, and Specificity.
-    *   Compute the official **ICBHI Score** ($S = \frac{Se + Sp}{2}$) to compare performance with literature standards.
-    *   Write an inference script that measures processing latency for a single raw `.wav` file to assess real-time viability.
-    *   Consolidate all findings, comparison charts, and training history logs into the final walkthrough report.
+    *   Update `dataset.py` to output both cycle-level labels (Normal/Crackle/Wheeze/Both) and patient-level pathology labels (COPD, Pneumonia, URTI, Healthy).
+    *   Add an auxiliary classification head to `models.py` for patient diagnosis.
+    *   Modify the training loss to be a weighted combination of both tasks:
+        $$L_{\text{total}} = L_{\text{cycle}} + \beta L_{\text{pathology}}$$
+*   **Verification**: Confirm that multi-task heads train jointly and optimize together.
 
 ---
 
 ## Verification Plan
 
 ### Automated Tests
-1.  **Pipeline Verification**: Run a dry-run script testing resampling, filtering, and segmentation on a single audio file to verify output shape consistency.
-2.  **Model Dry Run**: Pass a dummy tensor of shape $(1, 3, 128, 128)$ through the CNN-LSTM model to verify that output dimensions match target classes.
-3.  **VRAM Profiling**: Run a 1-epoch training loop with batch size 32 on the GPU, monitoring memory utilization via `nvidia-smi` to ensure memory consumption remains under 5GB.
+1.  **Restructured Import Test**: Run imports check for all scripts in their new subdirectories to verify there are no `ModuleNotFoundError` crashes.
+2.  **Mixup Shape Test**: Verify that the mixed batch tensor matches batch dimensions $(B, C, 128, 128)$ and labels are soft-target distributions $(B, 4)$.
+3.  **PANNs Backbone Integration Test**: Pass a dummy tensor of shape $(2, 3, 128, 128)$ through the new CNN14-LSTM hybrid model and check that it outputs shape $(2, 4)$ without crashing.
 
 ### Manual Verification
-1.  **Audio Quality Verification**: Plot raw vs. preprocessed waveforms and listen to the filtered segments to confirm that muscle/friction noise is suppressed.
-2.  **Confusion Matrix Verification**: Manually review the confusion matrix to ensure the model successfully detects minority classes (e.g., Pneumonia) and does not default to classifying all inputs as COPD.
+1.  **Validation Matrix Review**: Manually inspect the final ablation table to confirm if the combination of audio pretraining and Focal Loss elevates the overall ICBHI Score past $55\%$ under Stacked (Config D).

@@ -26,18 +26,21 @@ To keep the repository clean and avoid tracking large binary datasets, the proje
 ├── evaluation_results/                  # Compiled confusion matrices and plots
 ├── processed_data/                      # Segmented 3.0s WAV cycle files (gitignored)
 ├── processed_features/                  # Stacked 3-channel PyTorch feature tensors (gitignored)
+├── src/                                 # Project source code
+│   ├── baselines/                       # Legacy SVM, CNN, and CNN-LSTM baselines
+│   │   ├── train_baseline_svm.py
+│   │   ├── train_baseline_cnn.py
+│   │   ├── train_hybrid_model.py
+│   │   └── evaluate_models.py
+│   ├── experiments/                     # Active pipeline scripts (runner, curves, models)
+│   │   ├── models.py
+│   │   ├── run_experiments.py
+│   │   ├── run_all_experiments.py
+│   │   └── plot_comparison_curves.py
+│   ├── dataset.py                       # Core PyTorch dataset & augmentations
+│   ├── preprocess.py                    # Resampling & segmentation pipeline
+│   └── extract_features.py              # Time-frequency feature extraction
 ├── training_logs/                       # Epoch history JSON files and curve plots
-├── preprocess.py                        # Preprocessing, filtering, and segmentation script
-├── extract_features.py                  # Multi-branch feature extraction and caching script
-├── dataset.py                           # PyTorch Dataset, SpecAugment, and DataLoader module
-├── models.py                            # BaselineCNN and CNNLSTM architecture module
-├── run_experiments.py                   # Single ablation training/calibration experiment runner
-├── run_all_experiments.py               # Automation script for the 8 ablation study configurations
-├── plot_comparison_curves.py            # Generates comparative validation curves comparison plot
-├── train_baseline_svm.py                # Legacy SVM baseline classifier script
-├── train_baseline_cnn.py                # Legacy CNN baseline training script
-├── train_hybrid_model.py                # Legacy CNN-LSTM baseline training script
-├── evaluate_models.py                   # Legacy comparison evaluation script
 ├── .gitignore                           # Git exclusion configuration
 └── README.md                            # Project documentation
 ```
@@ -65,20 +68,20 @@ The pipeline requires the following library stack:
 ### 1. Preprocessing and Segmentation
 Run the preprocessing script to resample all audio recordings to 4000 Hz, apply a bandpass filter (100 Hz - 1999 Hz) to eliminate extraneous heart and muscle friction noise, and slice continuous audio files into uniform 3.0s cycle WAV files:
 ```bash
-python preprocess.py
+python src/preprocess.py
 ```
 
 ### 2. Multi-Branch Feature Extraction
 Run the feature extraction script to parse the segmented cycle files, compute Mel Spectrogram, CQT, and CWT Scalogram features, stack them into a 3D tensor of size (3, 128, 128), and serialize them to disk as PyTorch tensor files:
 ```bash
-python extract_features.py
+python src/extract_features.py
 ```
 This script also generates a `metadata.csv` indexing file, which is used by the dataloader to index the datasets.
 
 ### 3. Running a Single Experiment
 To run a single training/evaluation configuration using early stopping, mixed-precision training, and validation-driven decision threshold calibration:
 ```bash
-python run_experiments.py --model hybrid --config D --epochs 50 --batch_size 32
+python src/experiments/run_experiments.py --model hybrid --config D --epochs 50 --batch_size 32
 ```
 *   `--model`: Choose `cnn` (Baseline ResNet-18) or `hybrid` (Proposed CNN-LSTM).
 *   `--config`: Choose `A` (Mel), `B` (Mel+CQT), `C` (Mel+CWT), or `D` (Stacked).
@@ -86,17 +89,17 @@ python run_experiments.py --model hybrid --config D --epochs 50 --batch_size 32
 ### 4. Running the Entire Ablation Sweep
 To train all 8 configuration combinations sequentially and automatically compile a markdown metrics comparison table:
 ```bash
-python run_all_experiments.py --epochs 50 --batch_size 32
+python src/experiments/run_all_experiments.py --epochs 50 --batch_size 32
 ```
 If you have already trained the checkpoints and calibrated the decision thresholds, you can generate/compile the metrics table instantly without retraining by running:
 ```bash
-python run_all_experiments.py --eval_only
+python src/experiments/run_all_experiments.py --eval_only
 ```
 
 ### 5. Plotting Validation Convergence Curves
 To read all training history files and plot a combined validation curve comparison figure:
 ```bash
-python plot_comparison_curves.py
+python src/experiments/plot_comparison_curves.py
 ```
 
 ---
