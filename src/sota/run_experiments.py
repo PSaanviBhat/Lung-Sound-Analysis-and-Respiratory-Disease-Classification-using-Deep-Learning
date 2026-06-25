@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import argparse
 import json
 import time
@@ -112,15 +113,26 @@ def calculate_icbhi_score(y_true, y_pred):
     
     return sensitivity, specificity, icbhi_score
 
-def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_alpha=0.2, mixup_prob=0.8, label_smoothing_factor=0.1):
+def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_alpha=0.2, mixup_prob=0.8, label_smoothing_factor=0.1, multitask=False, pathology_weight=1.0, criterion_pathology=None):
     model.train()
     running_loss = 0.0
+    running_cycle_loss = 0.0
+    running_pathology_loss = 0.0
+    
     all_preds = []
     all_labels = []
     
-    for batch_x, batch_y in tqdm(loader, desc="Training", leave=False):
-        batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
-        
+    all_pathology_preds = []
+    all_pathology_labels = []
+    
+    for batch in tqdm(loader, desc="Training", leave=False):
+        if multitask:
+            batch_x, batch_y, batch_pathology = batch
+            batch_x, batch_y, batch_pathology = batch_x.to(DEVICE), batch_y.to(DEVICE), batch_pathology.to(DEVICE)
+        else:
+            batch_x, batch_y = batch
+            batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
+            
         optimizer.zero_grad()
         
         if mixup and np.random.rand() < mixup_prob:
@@ -133,50 +145,97 @@ def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_
             y_a = torch.nn.functional.one_hot(batch_y, num_classes=4).float()
             y_b = torch.nn.functional.one_hot(batch_y[index], num_classes=4).float()
             targets = lam * y_a + (1.0 - lam) * y_b
+            
+            if multitask:
+                yp_a = torch.nn.functional.one_hot(batch_pathology, num_classes=3).float()
+                yp_b = torch.nn.functional.one_hot(batch_pathology[index], num_classes=3).float()
+                targets_pathology = lam * yp_a + (1.0 - lam) * yp_b
         else:
             mixed_x = batch_x
             targets = torch.nn.functional.one_hot(batch_y, num_classes=4).float()
+            if multitask:
+                targets_pathology = torch.nn.functional.one_hot(batch_pathology, num_classes=3).float()
             
         if label_smoothing_factor > 0:
             targets = targets * (1.0 - label_smoothing_factor) + (label_smoothing_factor / 4.0)
+            if multitask:
+                targets_pathology = targets_pathology * (1.0 - label_smoothing_factor) + (label_smoothing_factor / 3.0)
             
         with autocast():
-            outputs = model(mixed_x)
-            loss = criterion(outputs, targets)
+            if multitask:
+                outputs, outputs_pathology = model(mixed_x)
+                loss_cycle = criterion(outputs, targets)
+                loss_pathology = criterion_pathology(outputs_pathology, targets_pathology)
+                loss = loss_cycle + pathology_weight * loss_pathology
+            else:
+                outputs = model(mixed_x)
+                loss = criterion(outputs, targets)
             
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
         
         running_loss += loss.item() * batch_x.size(0)
+        if multitask:
+            running_cycle_loss += loss_cycle.item() * batch_x.size(0)
+            running_pathology_loss += loss_pathology.item() * batch_x.size(0)
+            
         _, preds = torch.max(outputs, 1)
-        
         all_preds.extend(preds.cpu().numpy())
         all_labels.extend(batch_y.cpu().numpy())
+        
+        if multitask:
+            _, pathology_preds = torch.max(outputs_pathology, 1)
+            all_pathology_preds.extend(pathology_preds.cpu().numpy())
+            all_pathology_labels.extend(batch_pathology.cpu().numpy())
         
     epoch_loss = running_loss / len(loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
     _, _, epoch_icbhi = calculate_icbhi_score(all_labels, all_preds)
     
+    if multitask:
+        epoch_pathology_loss = running_pathology_loss / len(loader.dataset)
+        epoch_pathology_acc = accuracy_score(all_pathology_labels, all_pathology_preds)
+        return epoch_loss, epoch_acc, epoch_icbhi, epoch_pathology_loss, epoch_pathology_acc
+        
     return epoch_loss, epoch_acc, epoch_icbhi
 
 @torch.no_grad()
-def validate(model, loader, criterion):
+def validate(model, loader, criterion, multitask=False, pathology_weight=1.0, criterion_pathology=None):
     model.eval()
     running_loss = 0.0
     all_logits = []
     all_labels = []
     
-    for batch_x, batch_y in tqdm(loader, desc="Validating", leave=False):
-        batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
-        
+    all_pathology_preds = []
+    all_pathology_labels = []
+    
+    for batch in tqdm(loader, desc="Validating", leave=False):
+        if multitask:
+            batch_x, batch_y, batch_pathology = batch
+            batch_x, batch_y, batch_pathology = batch_x.to(DEVICE), batch_y.to(DEVICE), batch_pathology.to(DEVICE)
+        else:
+            batch_x, batch_y = batch
+            batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
+            
         with autocast():
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
+            if multitask:
+                outputs, outputs_pathology = model(batch_x)
+                loss_cycle = criterion(outputs, batch_y)
+                loss_pathology = criterion_pathology(outputs_pathology, batch_pathology)
+                loss = loss_cycle + pathology_weight * loss_pathology
+            else:
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
             
         running_loss += loss.item() * batch_x.size(0)
         all_logits.append(outputs.cpu().numpy())
         all_labels.extend(batch_y.cpu().numpy())
+        
+        if multitask:
+            _, pathology_preds = torch.max(outputs_pathology, 1)
+            all_pathology_preds.extend(pathology_preds.cpu().numpy())
+            all_pathology_labels.extend(batch_pathology.cpu().numpy())
         
     val_loss = running_loss / len(loader.dataset)
     val_logits = np.concatenate(all_logits, axis=0)
@@ -188,6 +247,10 @@ def validate(model, loader, criterion):
     val_acc = accuracy_score(all_labels, val_preds)
     val_se, val_sp, val_score = calculate_icbhi_score(all_labels, val_preds)
     
+    if multitask:
+        val_pathology_acc = accuracy_score(all_pathology_labels, all_pathology_preds)
+        return val_loss, val_acc, val_se, val_sp, val_score, val_probs, np.array(all_labels), val_pathology_acc
+        
     return val_loss, val_acc, val_se, val_sp, val_score, val_probs, np.array(all_labels)
 
 def optimize_thresholds(val_probs, val_labels):
@@ -213,17 +276,30 @@ def optimize_thresholds(val_probs, val_labels):
     print(f"Best Validation ICBHI Score (Calibrated): {best_score*100:.2f}%")
     return best_thresholds, best_score
 
-def evaluate_test(model, test_loader, thresholds=None):
+def evaluate_test(model, test_loader, thresholds=None, multitask=False):
     model.eval()
     all_logits = []
     all_labels = []
     
+    all_pathology_logits = []
+    all_pathology_labels = []
+    
     start_time = time.time()
     with torch.no_grad():
-        for batch_x, batch_y in test_loader:
-            batch_x = batch_x.to(DEVICE)
-            with autocast():
-                outputs = model(batch_x)
+        for batch in test_loader:
+            if multitask:
+                batch_x, batch_y, batch_pathology = batch
+                batch_x = batch_x.to(DEVICE)
+                with autocast():
+                    outputs, outputs_pathology = model(batch_x)
+                all_pathology_logits.append(outputs_pathology.cpu().numpy())
+                all_pathology_labels.extend(batch_pathology.numpy())
+            else:
+                batch_x, batch_y = batch
+                batch_x = batch_x.to(DEVICE)
+                with autocast():
+                    outputs = model(batch_x)
+            
             all_logits.append(outputs.cpu().numpy())
             all_labels.extend(batch_y.numpy())
     end_time = time.time()
@@ -264,6 +340,20 @@ def evaluate_test(model, test_loader, thresholds=None):
             'preds': preds_cal.tolist()
         }
         
+    if multitask:
+        pathology_logits = np.concatenate(all_pathology_logits, axis=0)
+        exp_pathology = np.exp(pathology_logits - np.max(pathology_logits, axis=1, keepdims=True))
+        pathology_probs = exp_pathology / np.sum(exp_pathology, axis=1, keepdims=True)
+        pathology_preds = np.argmax(pathology_probs, axis=1)
+        pathology_labels = np.array(all_pathology_labels)
+        pathology_acc = accuracy_score(pathology_labels, pathology_preds)
+        
+        results['pathology'] = {
+            'accuracy': pathology_acc,
+            'preds': pathology_preds.tolist(),
+            'labels': pathology_labels.tolist()
+        }
+        
     return results, labels
 
 def plot_curves(history, model_type, config_key, save_path):
@@ -294,18 +384,19 @@ def plot_curves(history, model_type, config_key, save_path):
 def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_rate=1e-4, patience=10, 
                    tune_only=False, eval_only=False, use_augmentations=True, 
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
-                   label_smoothing=0.1, focal_gamma=2.0):
+                   label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
     config_name = config_info['name']
     
     # Save SOTA checkpoints separately by using the _sota suffix
-    checkpoint_name = f"{model_type}_config_{config_key}_sota.pth"
+    suffix = "_sota_multitask" if multitask else "_sota"
+    checkpoint_name = f"{model_type}_config_{config_key}{suffix}.pth"
     model_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
-    thresholds_path = os.path.join(CHECKPOINT_DIR, f"{model_type}_config_{config_key}_sota_thresholds.npy")
-    log_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}_sota_history.json")
-    plot_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}_sota_curves.png")
+    thresholds_path = os.path.join(CHECKPOINT_DIR, f"{model_type}_config_{config_key}{suffix}_thresholds.npy")
+    log_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}{suffix}_history.json")
+    plot_path = os.path.join(LOG_DIR, f"{model_type}_config_{config_key}{suffix}_curves.png")
     
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -318,24 +409,28 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     print(f"Input Channels: {in_channels} (Indices: {channels})")
     print(f"SOTA Augmentations: {use_augmentations} | Mixup: {mixup} (alpha={mixup_alpha}, prob={mixup_prob})")
     print(f"Label Smoothing: {label_smoothing} | Focal Loss Gamma: {focal_gamma}")
+    print(f"Multi-Task Learning: {multitask} (Weight: {pathology_weight})")
     
     print("Loading dataloaders...")
     train_loader, val_loader, test_loader = get_dataloaders(
         batch_size=batch_size, 
         channels_to_use=channels,
-        use_augmentations=use_augmentations
+        use_augmentations=use_augmentations,
+        multitask=multitask
     )
     
     pretrained = not (eval_only or tune_only)
     if model_type == 'cnn':
-        model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained).to(DEVICE)
+        model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
     else:
-        model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained).to(DEVICE)
+        model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
         
     if focal_gamma > 0:
         criterion = FocalLoss(gamma=focal_gamma)
+        criterion_pathology = FocalLoss(gamma=focal_gamma)
     else:
         criterion = nn.CrossEntropyLoss()
+        criterion_pathology = nn.CrossEntropyLoss()
     
     if not (eval_only or tune_only):
         print(f"Initializing Adam optimizer (lr={learning_rate}) and CosineAnnealingLR...")
@@ -349,15 +444,31 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
             'train_loss': [], 'train_acc': [], 'train_score': [],
             'val_loss': [], 'val_acc': [], 'val_score': []
         }
+        if multitask:
+            history['train_pathology_loss'] = []
+            history['train_pathology_acc'] = []
+            history['val_pathology_acc'] = []
         
         print("\nStarting training loop...")
         for epoch in range(1, epochs + 1):
-            train_loss, train_acc, train_score = train_epoch(
-                model, train_loader, criterion, optimizer, scaler,
-                mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob,
-                label_smoothing_factor=label_smoothing
-            )
-            val_loss, val_acc, val_se, val_sp, val_score, _, _ = validate(model, val_loader, criterion)
+            if multitask:
+                train_loss, train_acc, train_score, train_path_loss, train_path_acc = train_epoch(
+                    model, train_loader, criterion, optimizer, scaler,
+                    mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob,
+                    label_smoothing_factor=label_smoothing, multitask=True,
+                    pathology_weight=pathology_weight, criterion_pathology=criterion_pathology
+                )
+                val_loss, val_acc, val_se, val_sp, val_score, _, _, val_path_acc = validate(
+                    model, val_loader, criterion, multitask=True,
+                    pathology_weight=pathology_weight, criterion_pathology=criterion_pathology
+                )
+            else:
+                train_loss, train_acc, train_score = train_epoch(
+                    model, train_loader, criterion, optimizer, scaler,
+                    mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob,
+                    label_smoothing_factor=label_smoothing
+                )
+                val_loss, val_acc, val_se, val_sp, val_score, _, _ = validate(model, val_loader, criterion)
             
             scheduler.step()
             
@@ -367,10 +478,19 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
             history['val_loss'].append(val_loss)
             history['val_acc'].append(val_acc)
             history['val_score'].append(val_score)
+            if multitask:
+                history['train_pathology_loss'].append(train_path_loss)
+                history['train_pathology_acc'].append(train_path_acc)
+                history['val_pathology_acc'].append(val_path_acc)
             
-            print(f"Epoch {epoch:02d}/{epochs:02d} | "
-                  f"Train Loss: {train_loss:.4f} - Train Acc: {train_acc*100:.2f}% - Train ICBHI: {train_score*100:.2f}% | "
-                  f"Val Loss: {val_loss:.4f} - Val Acc: {val_acc*100:.2f}% - Val ICBHI: {val_score*100:.2f}%")
+            if multitask:
+                print(f"Epoch {epoch:02d}/{epochs:02d} | "
+                      f"Train Loss: {train_loss:.4f} (Path Loss: {train_path_loss:.4f}) - Cycle Acc: {train_acc*100:.2f}% - Path Acc: {train_path_acc*100:.2f}% | "
+                      f"Val Loss: {val_loss:.4f} - Cycle ICBHI: {val_score*100:.2f}% - Path Acc: {val_path_acc*100:.2f}%")
+            else:
+                print(f"Epoch {epoch:02d}/{epochs:02d} | "
+                      f"Train Loss: {train_loss:.4f} - Train Acc: {train_acc*100:.2f}% - Train ICBHI: {train_score*100:.2f}% | "
+                      f"Val Loss: {val_loss:.4f} - Val Acc: {val_acc*100:.2f}% - Val ICBHI: {val_score*100:.2f}%")
             
             early_stopping(val_score, model, model_path)
             if early_stopping.early_stop:
@@ -387,7 +507,13 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     
     thresholds = None
     if not eval_only:
-        val_loss, val_acc, val_se, val_sp, val_score, val_probs, val_labels = validate(model, val_loader, criterion)
+        if multitask:
+            val_loss, val_acc, val_se, val_sp, val_score, val_probs, val_labels, val_path_acc = validate(
+                model, val_loader, criterion, multitask=True,
+                pathology_weight=pathology_weight, criterion_pathology=criterion_pathology
+            )
+        else:
+            val_loss, val_acc, val_se, val_sp, val_score, val_probs, val_labels = validate(model, val_loader, criterion)
         print(f"\nDefault Validation ICBHI Score: {val_score*100:.2f}% (Se: {val_se*100:.2f}%, Sp: {val_sp*100:.2f}%)")
         
         thresholds, calibrated_val_score = optimize_thresholds(val_probs, val_labels)
@@ -401,7 +527,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
             print("No saved thresholds found. Evaluating using standard argmax only.")
             
     print("\nEvaluating on Test Split...")
-    test_results, test_labels = evaluate_test(model, test_loader, thresholds)
+    test_results, test_labels = evaluate_test(model, test_loader, thresholds, multitask=multitask)
     
     print("\n" + "="*50)
     print("               TEST SPLIT METRICS")
@@ -420,7 +546,11 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         print(f"  Specificity : {test_results['calibrated']['sp']*100:.2f}%")
         print(f"  ICBHI Score : {test_results['calibrated']['score']*100:.2f}%")
         
-    summary_path = os.path.join(OUTPUT_DIR, f"{model_type}_config_{config_key}_sota_results.json")
+    if multitask and 'pathology' in test_results:
+        print("\n[Pathology Classification (Disease State)]:")
+        print(f"  Accuracy    : {test_results['pathology']['accuracy']*100:.2f}%")
+        
+    summary_path = os.path.join(OUTPUT_DIR, f"{model_type}_config_{config_key}{suffix}_results.json")
     with open(summary_path, 'w') as f:
         json.dump(test_results, f, indent=4)
     print(f"Results summary saved to {summary_path}")
@@ -442,6 +572,8 @@ def main():
     parser.add_argument('--mixup_prob', type=float, default=0.8, help='Mixup probability per batch')
     parser.add_argument('--label_smoothing', type=float, default=0.1, help='Label smoothing factor')
     parser.add_argument('--focal_gamma', type=float, default=2.0, help='Focal loss gamma parameter (set 0.0 to use standard cross-entropy)')
+    parser.add_argument('--multitask', action='store_true', help='Enable multi-task pathology classification')
+    parser.add_argument('--pathology_weight', type=float, default=1.0, help='Weight factor for pathology loss')
     args = parser.parse_args()
     
     run_experiment(
@@ -458,7 +590,9 @@ def main():
         mixup_alpha=args.mixup_alpha,
         mixup_prob=args.mixup_prob,
         label_smoothing=args.label_smoothing,
-        focal_gamma=args.focal_gamma
+        focal_gamma=args.focal_gamma,
+        multitask=args.multitask,
+        pathology_weight=args.pathology_weight
     )
 
 if __name__ == "__main__":

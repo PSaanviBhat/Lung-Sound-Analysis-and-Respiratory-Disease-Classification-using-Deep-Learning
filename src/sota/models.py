@@ -141,12 +141,16 @@ def load_panns_state_dict(model, checkpoint_path, in_channels=3):
     return model
 
 class BaselineCNNPANN(nn.Module):
-    def __init__(self, in_channels=3, num_classes=4, pretrained=True):
+    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False):
         super(BaselineCNNPANN, self).__init__()
         self.backbone = Cnn14Backbone(in_channels=in_channels)
         self.fc1 = nn.Linear(2048, 2048, bias=True)
         self.fc_final = nn.Linear(2048, num_classes, bias=True)
+        self.multitask = multitask
         
+        if multitask:
+            self.fc_pathology = nn.Linear(2048, 3, bias=True)
+            
         self.init_weights()
         
         if pretrained:
@@ -156,6 +160,8 @@ class BaselineCNNPANN(nn.Module):
     def init_weights(self):
         init_layer(self.fc1)
         init_layer(self.fc_final)
+        if self.multitask:
+            init_layer(self.fc_pathology)
         
     def forward(self, x):
         # x shape: (B, in_channels, 128, 128)
@@ -168,15 +174,21 @@ class BaselineCNNPANN(nn.Module):
         x = x1 + x2
         
         x = F.dropout(x, p=0.5, training=self.training)
-        x = F.relu_(self.fc1(x))
-        x = F.dropout(x, p=0.5, training=self.training)
-        logits = self.fc_final(x)
-        return logits
+        x_shared = F.relu_(self.fc1(x))
+        x_shared = F.dropout(x_shared, p=0.5, training=self.training)
+        
+        logits_cycle = self.fc_final(x_shared)
+        if self.multitask:
+            logits_pathology = self.fc_pathology(x_shared)
+            return logits_cycle, logits_pathology
+            
+        return logits_cycle
 
 class CNNLSTMPANN(nn.Module):
-    def __init__(self, in_channels=3, num_classes=4, pretrained=True):
+    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False):
         super(CNNLSTMPANN, self).__init__()
         self.backbone = Cnn14Backbone(in_channels=in_channels)
+        self.multitask = multitask
         
         # BiLSTM input_size is 2048 * 4 = 8192
         self.lstm = nn.LSTM(
@@ -196,6 +208,14 @@ class CNNLSTMPANN(nn.Module):
             nn.Linear(128, num_classes)
         )
         
+        if multitask:
+            self.fc_pathology = nn.Sequential(
+                nn.Linear(512, 128),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(128, 3)
+            )
+            
         if pretrained:
             checkpoint_path = download_panns_weights()
             load_panns_state_dict(self, checkpoint_path, in_channels=in_channels)
@@ -217,5 +237,10 @@ class CNNLSTMPANN(nn.Module):
         final_state = lstm_out[:, -1, :] # Shape: (B, 512)
         
         # Classification
-        logits = self.fc(final_state)
-        return logits
+        logits_cycle = self.fc(final_state)
+        
+        if self.multitask:
+            logits_pathology = self.fc_pathology(final_state)
+            return logits_cycle, logits_pathology
+            
+        return logits_cycle

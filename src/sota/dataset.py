@@ -52,14 +52,21 @@ class SOTAAugmentation(object):
         return tensor
 
 class LungSoundDatasetSOTA(Dataset):
-    def __init__(self, metadata_file, split='train', val_ratio=0.2, random_seed=42, transform=None, channels_to_use=None):
+    def __init__(self, metadata_file, split='train', val_ratio=0.2, random_seed=42, transform=None, channels_to_use=None, multitask=False):
         self.split = split
         self.transform = transform
         self.channels_to_use = channels_to_use
+        self.multitask = multitask
         
         # Load metadata index
         df = pd.read_csv(metadata_file)
         
+        if self.multitask:
+            # Filter for COPD, URTI, Healthy
+            df = df[df['diagnosis'].isin(['COPD', 'URTI', 'Healthy'])].reset_index(drop=True)
+            self.pathology_map = {'COPD': 0, 'URTI': 1, 'Healthy': 2}
+            df['pathology_label'] = df['diagnosis'].map(self.pathology_map)
+            
         # Perform subject-level train/val split
         if split in ['train', 'val']:
             # Filter for official train split
@@ -103,6 +110,10 @@ class LungSoundDatasetSOTA(Dataset):
         if self.split == 'train' and self.transform:
             tensor = self.transform(tensor)
             
+        if self.multitask:
+            pathology_label = int(row['pathology_label'])
+            return tensor, label, pathology_label
+            
         return tensor, label
 
     def get_labels(self):
@@ -121,13 +132,13 @@ def get_class_balanced_sampler(dataset):
     sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
     return sampler
 
-def get_dataloaders(metadata_file="metadata.csv", batch_size=32, num_workers=0, channels_to_use=None, use_augmentations=True):
+def get_dataloaders(metadata_file="metadata.csv", batch_size=32, num_workers=0, channels_to_use=None, use_augmentations=True, multitask=False):
     # Instantiate SOTA training dataset with augmentations
     transform = SOTAAugmentation() if use_augmentations else None
     
-    train_dataset = LungSoundDatasetSOTA(metadata_file, split='train', transform=transform, channels_to_use=channels_to_use)
-    val_dataset = LungSoundDatasetSOTA(metadata_file, split='val', channels_to_use=channels_to_use)
-    test_dataset = LungSoundDatasetSOTA(metadata_file, split='test', channels_to_use=channels_to_use)
+    train_dataset = LungSoundDatasetSOTA(metadata_file, split='train', transform=transform, channels_to_use=channels_to_use, multitask=multitask)
+    val_dataset = LungSoundDatasetSOTA(metadata_file, split='val', channels_to_use=channels_to_use, multitask=multitask)
+    test_dataset = LungSoundDatasetSOTA(metadata_file, split='test', channels_to_use=channels_to_use, multitask=multitask)
     
     # Balanced sampler for training to combat class imbalance
     train_sampler = get_class_balanced_sampler(train_dataset)
