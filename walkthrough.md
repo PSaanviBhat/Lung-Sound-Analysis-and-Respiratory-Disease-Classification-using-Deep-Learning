@@ -28,7 +28,7 @@ This document summarizes the results of the 8 different ablation study experimen
 
 The figure below shows the validation ICBHI Score convergence curves for the key experiments over the training epochs:
 
-![Validation Convergence Comparison](evaluation_results\validation_score_comparison.png)
+![Validation Convergence Comparison](C:/Users/psaan/.gemini/antigravity/brain/b6b4ba09-9d6e-4837-beb0-45f22e883648/validation_score_comparison.png)
 
 ---
 
@@ -66,7 +66,7 @@ To avoid the raw audio feature extraction bottleneck (627 ms/sample), we impleme
 
 We verified the augmentations using a visual sanity check script. Below is the saved visualization comparing original vs. augmented spectrogram features (Mel, CQT, CWT):
 
-![Augmentation Visual Check](evaluation_results/test_sota_augment.png)
+![Augmentation Visual Check](C:/Users/psaan/.gemini/antigravity/brain/b6b4ba09-9d6e-4837-beb0-45f22e883648/test_sota_augment.png)
 
 ### Mixup Regularization
 In the training loop of [run_experiments.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/run_experiments.py), we implemented Mixup. For each batch:
@@ -121,5 +121,51 @@ python src/sota/run_experiments.py --model cnn --config D --epochs 3 --batch_siz
 *   **Test split results**: Calibrated accuracy **47.86%**, ICBHI score **44.63%** (on only 3 epochs of training).
 
 This verifies that Focal Loss and Label Smoothing integrate perfectly with Mixup and early stopping checkpoint serialization.
+
+---
+
+## 6. Phase 15: Pretrained Audio Backbones (PANNs Cnn14)
+
+To boost model performance and leverage large-scale audio representation learning, we integrated pre-trained convolutional backbones from the **PANNs (Pretrained Audio Neural Networks)** model family, specifically the `Cnn14` architecture.
+
+### Model Architecture & Multi-Channel Adaptation
+We defined the model architectures in a new module [models.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/models.py):
+*   **`ConvBlock`**: Consists of two 2D convolutions with batch normalization and ReLU activations.
+*   **`Cnn14Backbone`**: Consists of 6 `ConvBlock` modules, outputting feature maps of shape `(B, 2048, 4, 4)`.
+*   **`BaselineCNNPANN`**: Uses `Cnn14Backbone` with a global pooling layer (sum of max and mean pool) and a classification head (`fc1` + `fc_final`).
+*   **`CNNLSTMPANN`**: Uses `Cnn14Backbone`, reorganizing the spatial outputs to sequence the time dimension (width of 4) into a 2-layer Bidirectional LSTM (`input_size=8192`), followed by a final classification head.
+
+To use the pre-trained weights (which expect mono 1-channel inputs) with our multi-channel stacked spectrogram configurations (A, B, C, D), we adapt the first convolution layer weights:
+$$\text{weights}_{\text{new}} = \frac{\text{weights}_{\text{pretrained}}.\text{repeat}(1, C_{\text{in}}, 1, 1)}{C_{\text{in}}}$$
+This maps the mono-channel weights to multi-channel weights while maintaining activation scaling.
+
+### Automated Testing & Weight Loading
+We verified shape compatibility and loading of weights using [test_panns.py](file:///d:/Internship%20'26/Lung%20Disease/scratch/test_panns.py):
+```bash
+python scratch/test_panns.py
+```
+Both `BaselineCNNPANN` and `CNNLSTMPANN` models load and execute successfully, repeating and scaling the first conv block weights as intended.
+
+### Verification Run Results (3 Epochs)
+We ran a 3-epoch dry run using the Stacked features (Config D) for both models with Mixup, Label Smoothing, and Focal Loss enabled:
+
+1.  **CNNLSTMPANN (Hybrid)**:
+    ```bash
+    python src/sota/run_experiments.py --model hybrid --config D --epochs 3 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0
+    ```
+    *   **Epoch 3**: Train Loss: 0.6357 | Train Acc: 39.75% | Val Loss: 0.6327 | Val Acc: 43.90%
+    *   **Calibrated Val ICBHI Score**: **50.63%**
+    *   **Test split results**: Calibrated accuracy **57.26%**, ICBHI score **49.93%**.
+
+2.  **BaselineCNNPANN (CNN)**:
+    ```bash
+    python src/sota/run_experiments.py --model cnn --config D --epochs 3 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0
+    ```
+    *   **Epoch 3**: Train Loss: 0.7778 | Train Acc: 28.07% | Val Loss: 0.7574 | Val Acc: 33.48%
+    *   **Calibrated Val ICBHI Score**: **50.57%**
+    *   **Test split results**: Calibrated accuracy **54.32%**, ICBHI score **48.31%**.
+
+The dry runs verify that the pre-trained models load correctly, train successfully with fast GPU times, and converge to strong calibration values in just a few epochs.
+
 
 

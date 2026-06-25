@@ -1,56 +1,62 @@
-# Implementation Plan — SOTA Loss Function Upgrade (Phase 14)
+# Implementation Plan — SOTA Pretrained Audio Backbones (Phase 15)
 
-This document details the implementation plan for Phase 14: Loss Function Upgrade. We will introduce multiclass Focal Loss and Label Smoothing into our SOTA training pipeline inside the `src/sota/` subdirectory.
+This document details the implementation plan for Phase 15: Pretrained Audio Backbones (PANNs Cnn14). We will define the PANNs Cnn14 backbone and its model wrappers (`BaselineCNNPANN` and `CNNLSTMPANN`) and load the pretrained weights while adapting the input channels for multi-channel input configurations.
 
 ---
 
 ## User Review Required
 
-> [!NOTE]
-> **Mathematical Compatibility of SOTA loss modules**:
-> 1. **Label Smoothing**: Instead of predicting hard one-hot targets (e.g. $[1.0, 0.0, 0.0, 0.0]$), we smooth them to prevent model overconfidence:
->    $$y_{\text{smoothed}} = y \cdot (1 - \epsilon) + \frac{\epsilon}{C}$$
->    where $\epsilon = 0.1$ (smoothing factor) and $C = 4$ (number of classes).
-> 2. **Focal Loss**: To focus training on hard/rare classes (e.g., crackle/wheeze), we down-weight easy "Normal" samples using a focal scaling factor $(1 - p_c)^\gamma$.
-> 3. **Composition (Mixup + Label Smoothing + Focal Loss)**:
->    If Mixup is active, the soft mixed targets $y_{\text{mix}}$ will first be smoothed using the Label Smoothing formula, and then the Focal Loss will be computed over these smoothed soft targets:
->    $$L = -\sum_{c=1}^{C} y_{\text{smoothed}, c} \cdot (1 - p_c)^\gamma \cdot \log(p_c)$$
->    This composition is mathematically robust and runs fully on the GPU.
+> [!IMPORTANT]
+> **Pretrained Weights Download & Storage**:
+> We will download the `Cnn14` weights (`Cnn14_mAP=0.431.pth`) from the official Zenodo link (312 MB). The download will be cached locally in `checkpoints/Cnn14_mAP=0.431.pth`. This is done automatically on first run via `urllib.request` with a `tqdm` progress bar.
+>
+> **Weight Mapping and Channel Scaling**:
+> The pre-trained PANNs Cnn14 was trained on mono audio (1 channel). Our pipeline supports input configurations with up to 3 channels (Mel, CQT, CWT stacked). To use the pre-trained weights for multi-channel inputs:
+> 1. We repeat the weights of the first convolutional layer `conv_block1.conv1.weight` across the channel dimension (`in_channels`).
+> 2. We scale the weights by dividing by `in_channels` to maintain the scale of the output activations:
+>    $$\text{weights}_{\text{new}} = \frac{\text{weights}_{\text{pretrained}}.\text{repeat}(1, C_{\text{in}}, 1, 1)}{C_{\text{in}}}$$
+> This is mathematically correct and preserves the pre-trained features without exploding activations.
 
 ---
 
 ## Open Questions
 
-None. The mathematical composition of Mixup, Label Smoothing, and Focal Loss is standard and resolves class imbalance and overfitting simultaneously.
+None. The PANNs Cnn14 mapping and channel repeat/scaling technique is a standard transfer learning procedure for multi-channel audio spectrograms.
 
 ---
 
 ## Proposed Changes
 
-### [Component: SOTA Training Pipeline]
+### [Component: SOTA Model Architectures]
+
+#### [NEW] [models.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/models.py)
+*   Create a clean model file for SOTA containing:
+    *   `ConvBlock`: PyTorch modules matching the PANNs layers.
+    *   `Cnn14Backbone`: Integrates 6 convolutional blocks resulting in a `(B, 2048, 4, 4)` output feature map.
+    *   `download_panns_weights()`: Automatic downloader using a tqdm progress bar callback.
+    *   `load_panns_state_dict()`: Maps state dict keys, repeats and scales the first layer's weights for `in_channels != 1`, and loads them strictly for matching layers.
+    *   `BaselineCNNPANN`: Wraps the backbone with a fully connected head (`fc1` + `fc_final`).
+    *   `CNNLSTMPANN`: Wraps the backbone with a sequence modeling head (BiLSTM with `input_size=8192` + classification head).
+
+### [Component: SOTA Training Runner]
 
 #### [MODIFY] [run_experiments.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/run_experiments.py)
-*   **Implement `FocalLoss` PyTorch Module**:
-    *   Create a custom `FocalLoss(nn.Module)` class that handles both 1D integer targets and 2D soft probability targets (enabling composition with Mixup and Label Smoothing).
-*   **Integrate Label Smoothing & Focal Loss**:
-    *   Add `--focal_gamma` (default 2.0, set to 0.0 for standard cross-entropy) and `--label_smoothing` (default 0.1, set to 0.0 to disable) arguments to the argument parser.
-    *   Update `train_epoch` to:
-        1. Apply label smoothing to targets.
-        2. Instantiate the model loss using the new `FocalLoss` module.
-        3. Optimize parameters against the joint loss.
+*   Import `BaselineCNNPANN` and `CNNLSTMPANN` from the new `sota.models` instead of `experiments.models`.
+*   Support launching with these new SOTA models.
 
 ---
 
 ## Verification Plan
 
 ### Automated Tests
-1.  **Focal Loss Math & Shape Test**: Run a verification script `scratch/test_focal_loss.py` to confirm:
-    *   `FocalLoss` outputs correct loss values for toy examples (higher loss for wrong/hard predictions, lower loss for correct/easy predictions).
-    *   Supports input shapes of $(B, 4)$ for logits and targets (soft targets).
-2.  **Pipeline Verification Run**: Run a 3-epoch dry training sweep with both Focal Loss ($\gamma = 2.0$) and Label Smoothing ($\epsilon = 0.1$) enabled to verify epoch duration and saved checkpoints:
+1.  **Model & Weight Loading Verification**: Run verification script `scratch/test_panns.py` to confirm:
+    *   Weights download and load correctly.
+    *   Models produce correct shape `(B, 4)` for different channel configurations (A, B, C, D).
+    *   State dictionary is mapped successfully with no critical missing weights in the convolutional layers.
+2.  **Pipeline Verification Run**: Run a 3-epoch dry training run using the new `CNNLSTMPANN` model to check convergence:
     ```bash
-    python src/sota/run_experiments.py --model cnn --config D --epochs 3 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0
+    python src/sota/run_experiments.py --model hybrid --config D --epochs 3 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0
     ```
 
 ### Manual Verification
-1.  **Log Inspection**: Inspect the training CLI output to confirm that train/val losses decrease and the model evaluates successfully on the test split.
+1.  **Logs and Metrics**: Inspect training CLI output to check for validation loss reduction and correctness of prediction outputs.

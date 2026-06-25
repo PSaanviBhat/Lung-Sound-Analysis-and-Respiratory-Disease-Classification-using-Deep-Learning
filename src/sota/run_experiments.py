@@ -15,7 +15,7 @@ from tqdm import tqdm
 from sklearn.metrics import classification_report, accuracy_score
 
 from dataset import get_dataloaders
-from experiments.models import BaselineCNN, CNNLSTM
+from models import BaselineCNNPANN, CNNLSTMPANN
 
 # Configurations mapping
 CONFIGS = {
@@ -326,10 +326,11 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         use_augmentations=use_augmentations
     )
     
+    pretrained = not (eval_only or tune_only)
     if model_type == 'cnn':
-        model = BaselineCNN(in_channels=in_channels, num_classes=4).to(DEVICE)
+        model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained).to(DEVICE)
     else:
-        model = CNNLSTM(in_channels=in_channels, num_classes=4).to(DEVICE)
+        model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained).to(DEVICE)
         
     if focal_gamma > 0:
         criterion = FocalLoss(gamma=focal_gamma)
