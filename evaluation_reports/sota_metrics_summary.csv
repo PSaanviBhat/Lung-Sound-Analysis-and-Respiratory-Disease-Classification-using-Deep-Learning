@@ -1,0 +1,9 @@
+Backbone,Task,Calibration,Accuracy,Sensitivity (Se),Specificity (Sp),ICBHI Score,Pathology Acc,Inference Latency
+ResNet-18,Single-Task,Standard (Argmax),46.92%,36.53%,53.96%,45.25%,—,2.55 ms/cycle
+ResNet-18,Single-Task,Calibrated (Product),48.37%,35.27%,54.34%,44.81%,—,2.55 ms/cycle
+ResNet-18,Multi-Task,Standard (Argmax),46.57%,20.98%,70.22%,45.60%,90.74%,2.51 ms/cycle
+ResNet-18,Multi-Task,Calibrated (Product),46.57%,18.43%,69.43%,43.93%,90.74%,2.51 ms/cycle
+PANNs Cnn14,Single-Task,Standard (Argmax),48.77%,35.89%,57.12%,46.51%,—,24.38 ms/cycle
+PANNs Cnn14,Single-Task,Calibrated (Product),47.31%,29.93%,63.58%,46.76%,—,24.38 ms/cycle
+PANNs Cnn14,Multi-Task,Standard (Argmax),48.87%,36.18%,54.02%,45.10%,89.57%,7.65 ms/cycle
+PANNs Cnn14,Multi-Task,Calibrated (Product),52.82%,14.76%,81.25%,48.01%,89.57%,7.65 ms/cycle
