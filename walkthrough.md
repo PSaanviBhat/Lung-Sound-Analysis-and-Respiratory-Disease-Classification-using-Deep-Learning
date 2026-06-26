@@ -203,7 +203,7 @@ This verifies that the multi-task learning pipeline converges rapidly, achieves 
 
 ---
 
-## 8. Phase 17: SOTA Pipeline Optimizations & Full-Epoch Training
+## 8. SOTA Pipeline Optimizations & Full-Epoch Training
 
 To optimize the SOTA ResNet-18 model, we implemented class-weighted loss calculations, validation calibration constraints, and an early stopping bypass.
 
