@@ -28,7 +28,7 @@ This document summarizes the results of the 8 different ablation study experimen
 
 The figure below shows the validation ICBHI Score convergence curves for the key experiments over the training epochs:
 
-![Validation Convergence Comparison](evaluation_results\validation_score_comparison.png)
+![Validation Convergence Comparison](evaluation_results/validation_score_comparison.png)
 
 ---
 
@@ -66,7 +66,7 @@ To avoid the raw audio feature extraction bottleneck (627 ms/sample), we impleme
 
 We verified the augmentations using a visual sanity check script. Below is the saved visualization comparing original vs. augmented spectrogram features (Mel, CQT, CWT):
 
-![Augmentation Visual Check](evaluation_results\test_sota_augment.png)
+![Augmentation Visual Check](evaluation_results/test_sota_augment.png)
 
 ### Mixup Regularization
 In the training loop of [run_experiments.py](src\experiments\run_experiments.py), we implemented Mixup. For each batch:
