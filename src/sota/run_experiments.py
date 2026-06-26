@@ -253,10 +253,14 @@ def validate(model, loader, criterion, multitask=False, pathology_weight=1.0, cr
         
     return val_loss, val_acc, val_se, val_sp, val_score, val_probs, np.array(all_labels)
 
-def optimize_thresholds(val_probs, val_labels):
-    print("Optimizing decision thresholds on validation split using Random Sweep...")
+def optimize_thresholds(val_probs, val_labels, min_se=0.0):
+    print(f"Optimizing decision thresholds on validation split using Random Sweep (min_se={min_se})...")
     best_score = 0.0
     best_thresholds = np.ones(4)
+    
+    # Track the best overall score in case no trials satisfy the constraint
+    best_score_fallback = 0.0
+    best_thresholds_fallback = np.ones(4)
     
     np.random.seed(42)
     num_trials = 20000
@@ -266,12 +270,28 @@ def optimize_thresholds(val_probs, val_labels):
         adjusted_probs = val_probs / thresholds
         preds = np.argmax(adjusted_probs, axis=1)
         
-        _, _, score = calculate_icbhi_score(val_labels, preds)
+        se, sp, score = calculate_icbhi_score(val_labels, preds)
         
-        if score > best_score:
-            best_score = score
-            best_thresholds = thresholds
+        # Track overall fallback
+        if score > best_score_fallback:
+            best_score_fallback = score
+            best_thresholds_fallback = thresholds
             
+        if min_se > 0:
+            if se >= min_se:
+                if score > best_score:
+                    best_score = score
+                    best_thresholds = thresholds
+        else:
+            if score > best_score:
+                best_score = score
+                best_thresholds = thresholds
+                
+    if min_se > 0 and best_score == 0.0:
+        print(f"Warning: No threshold combination satisfied the constraint Se >= {min_se:.2f}. Falling back to best unconstrained score.")
+        best_score = best_score_fallback
+        best_thresholds = best_thresholds_fallback
+        
     print(f"Optimal Thresholds Found: {best_thresholds}")
     print(f"Best Validation ICBHI Score (Calibrated): {best_score*100:.2f}%")
     return best_thresholds, best_score
@@ -384,7 +404,8 @@ def plot_curves(history, model_type, config_key, save_path):
 def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_rate=1e-4, patience=10, 
                    tune_only=False, eval_only=False, use_augmentations=True, 
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
-                   label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns'):
+                   label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns',
+                   no_early_stopping=False, min_se=0.0, weighted_loss=False):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
@@ -431,11 +452,27 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         else:
             model = CNNLSTMResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
         
+    # Calculate class weights for loss function
+    if weighted_loss:
+        print("Calculating training split class weights...")
+        train_labels = train_loader.dataset.get_labels()
+        class_counts = np.bincount(train_labels)
+        total_samples = len(train_labels)
+        num_classes = len(class_counts)
+        class_weights = total_samples / (num_classes * class_counts + 1e-8)
+        class_weights = torch.FloatTensor(class_weights).to(DEVICE)
+        print(f"Calculated Class Weights: {class_weights.cpu().numpy()}")
+    else:
+        class_weights = None
+        
     if focal_gamma > 0:
-        criterion = FocalLoss(gamma=focal_gamma)
+        criterion = FocalLoss(alpha=class_weights, gamma=focal_gamma)
         criterion_pathology = FocalLoss(gamma=focal_gamma)
     else:
-        criterion = nn.CrossEntropyLoss()
+        if weighted_loss:
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            criterion = nn.CrossEntropyLoss()
         criterion_pathology = nn.CrossEntropyLoss()
     
     if not (eval_only or tune_only):
@@ -499,7 +536,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                       f"Val Loss: {val_loss:.4f} - Val Acc: {val_acc*100:.2f}% - Val ICBHI: {val_score*100:.2f}%")
             
             early_stopping(val_score, model, model_path)
-            if early_stopping.early_stop:
+            if not no_early_stopping and early_stopping.early_stop:
                 print("Early stopping triggered! Training stopped.")
                 break
                 
@@ -522,7 +559,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
             val_loss, val_acc, val_se, val_sp, val_score, val_probs, val_labels = validate(model, val_loader, criterion)
         print(f"\nDefault Validation ICBHI Score: {val_score*100:.2f}% (Se: {val_se*100:.2f}%, Sp: {val_sp*100:.2f}%)")
         
-        thresholds, calibrated_val_score = optimize_thresholds(val_probs, val_labels)
+        thresholds, calibrated_val_score = optimize_thresholds(val_probs, val_labels, min_se=min_se)
         np.save(thresholds_path, thresholds)
         print(f"Optimized thresholds saved to {thresholds_path}")
     else:
@@ -581,6 +618,9 @@ def main():
     parser.add_argument('--multitask', action='store_true', help='Enable multi-task pathology classification')
     parser.add_argument('--pathology_weight', type=float, default=1.0, help='Weight factor for pathology loss')
     parser.add_argument('--backbone', type=str, default='panns', choices=['panns', 'resnet'], help='Backbone network: panns or resnet')
+    parser.add_argument('--no_early_stopping', action='store_true', help='Disable early stopping to train for full epochs')
+    parser.add_argument('--min_se', type=float, default=0.0, help='Minimum sensitivity constraint for threshold calibration (0.0 to disable)')
+    parser.add_argument('--weighted_loss', action='store_true', help='Enable class weighting in Focal Loss / CrossEntropy')
     args = parser.parse_args()
     
     run_experiment(
@@ -600,7 +640,10 @@ def main():
         focal_gamma=args.focal_gamma,
         multitask=args.multitask,
         pathology_weight=args.pathology_weight,
-        backbone=args.backbone
+        backbone=args.backbone,
+        no_early_stopping=args.no_early_stopping,
+        min_se=args.min_se,
+        weighted_loss=args.weighted_loss
     )
 
 if __name__ == "__main__":

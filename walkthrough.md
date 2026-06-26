@@ -205,6 +205,29 @@ python src/sota/run_experiments.py --model hybrid --config D --epochs 3 --batch_
 
 This verifies that the multi-task learning pipeline converges rapidly, achieves publication-grade pathology classification scores, and trains successfully without issues.
 
+---
+
+## 8. Phase 17: SOTA Pipeline Optimizations & Full-Epoch Training
+
+To optimize the SOTA ResNet-18 model, we implemented class-weighted loss calculations, validation calibration constraints, and an early stopping bypass.
+
+### Codebase Enhancements
+1. **Class-Weighted Loss**: When `--weighted_loss` is enabled, the training split class frequencies are automatically calculated, and the inverse-frequency weights are passed to the `FocalLoss` or `CrossEntropyLoss` function, counteracting majority-class bias.
+2. **Clinical Calibration Constraints**: The `optimize_thresholds` function now accepts a `--min_se` option (minimum validation sensitivity constraint). It restricts the sweep search to threshold combinations yielding $Se \ge \text{min\_se}$ to prevent the optimizer from tanking sensitivity to maximize specificity.
+3. **Early Stopping Bypass**: The `--no_early_stopping` flag allows models to train for the full 50 epochs, ensuring the `CosineAnnealingLR` scheduler is fully utilized and the model converges to a stable local minimum.
+
+### Full-Epoch SOTA Training Instructions
+Run the following commands in your terminal to train the optimized ResNet-18 models for all 50 epochs with class weighting and a minimum sensitivity constraint of 40% on validation calibration:
+
+#### Option 1: SOTA Single-Task Training (ResNet-18 Backbone)
+```bash
+python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --no_early_stopping --weighted_loss --min_se 0.40
+```
+
+#### Option 2: SOTA Multi-Task Joint Training (ResNet-18 Backbone)
+```bash
+python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --multitask --pathology_weight 1.0 --no_early_stopping --weighted_loss --min_se 0.40
+```
 
 
 
