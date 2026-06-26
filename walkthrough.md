@@ -66,7 +66,7 @@ To avoid the raw audio feature extraction bottleneck (627 ms/sample), we impleme
 
 We verified the augmentations using a visual sanity check script. Below is the saved visualization comparing original vs. augmented spectrogram features (Mel, CQT, CWT):
 
-![Augmentation Visual Check](evaluation_results\test_sota_augment.png)
+![Augmentation Visual Check](evaluation_results/test_sota_augment.png)
 
 ### Mixup Regularization
 In the training loop of [run_experiments.py](src\experiments\run_experiments.py), we implemented Mixup. For each batch:
