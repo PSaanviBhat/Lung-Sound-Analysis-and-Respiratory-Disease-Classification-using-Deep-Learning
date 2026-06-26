@@ -229,5 +229,50 @@ python src/sota/run_experiments.py --model hybrid --backbone resnet --config D -
 python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --multitask --pathology_weight 1.0 --no_early_stopping --weighted_loss --min_se 0.40
 ```
 
+### Full-Epoch ResNet-18 SOTA Results (50 Epochs, Weighted Loss, Min Se = 40%)
+
+The 50-epoch sweeps with class-weighted Focal Loss and validation calibration constraints achieved the following results on the test split:
+
+| Model Config | Calibration | Accuracy | Sensitivity (Se) | Specificity (Sp) | ICBHI Score (S) | Pathology Acc. | Latency |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ResNet-18 Single-Task SOTA | Standard (Argmax) | 48.48% | 36.39% | 54.91% | 45.65% | — | 2.91 ms |
+| ResNet-18 Single-Task SOTA | Calibrated (min_se=0.40) | 38.43% | 36.29% | 38.44% | 37.37% | — | 2.91 ms |
+| ResNet-18 Multi-Task SOTA | Standard (Argmax) | 49.85% | 35.77% | 55.39% | 45.58% | **92.36%** | 19.06 ms |
+| ResNet-18 Multi-Task SOTA | Calibrated (min_se=0.40) | 47.21% | **41.58%** | 43.24% | 42.41% | **92.36%** | 19.06 ms |
+
+### Key Findings & Analysis
+1. **Pathology Accuracy**: The ResNet-18 Multi-Task model reached its highest pathology classification accuracy of **92.36%** (outperforming PANNs and previous ResNet-18 early-stopped runs).
+2. **Double-Correction Over-correction**: Using both `WeightedRandomSampler` (batch balancing) and `--weighted_loss` (loss function inverse class weights) resulted in a double-correction effect. This over-balanced the gradients towards rare abnormal classes, causing standard argmax specificity to drop (from 64.53% to 55.39%) while default sensitivity improved (from 30.86% to 35.77%).
+3. **Calibration Under-performance**: Under the strict validation constraint `min_se = 0.40`, the threshold search was forced to choose extreme weights that significantly compromised Specificity (down to 38.44% and 43.24%) on the test split, lowering the overall arithmetic mean ICBHI score.
+
+---
+
+## 9. Phase 18: Balanced Calibration & Single-Correction Training
+
+To optimize the sensitivity-specificity trade-off, we implemented geometric product and harmonic mean calibration metrics and designed a single-correction pipeline (batch balancing without inverse loss weights).
+
+### Step 1: Tune Thresholds on Existing Checkpoints (Geometric Product)
+Run these commands to calibrate the existing 50-epoch checkpoints using the Geometric Product ($Se \times Sp$) objective:
+
+*   **Single-Task Checkpoint Tuning**:
+    ```bash
+    python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --no_early_stopping --weighted_loss --tune_only --calib_metric product
+    ```
+*   **Multi-Task Checkpoint Tuning**:
+    ```bash
+    python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --multitask --pathology_weight 1.0 --no_early_stopping --weighted_loss --tune_only --calib_metric product
+    ```
+
+### Step 2: Retrain ResNet-18 Models without Weighted Loss (Single-Correction)
+Run these commands to train clean, unweighted models for 50 epochs and calibrate them automatically using the Geometric Product objective:
+
+*   **Single-Task Retraining**:
+    ```bash
+    python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --no_early_stopping --calib_metric product
+    ```
+*   **Multi-Task Retraining**:
+    ```bash
+    python src/sota/run_experiments.py --model hybrid --backbone resnet --config D --epochs 50 --batch_size 32 --mixup --mixup_prob 1.0 --label_smoothing 0.1 --focal_gamma 2.0 --multitask --pathology_weight 1.0 --no_early_stopping --calib_metric product
+    ```
 
 

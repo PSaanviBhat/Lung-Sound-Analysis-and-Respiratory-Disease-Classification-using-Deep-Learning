@@ -253,13 +253,13 @@ def validate(model, loader, criterion, multitask=False, pathology_weight=1.0, cr
         
     return val_loss, val_acc, val_se, val_sp, val_score, val_probs, np.array(all_labels)
 
-def optimize_thresholds(val_probs, val_labels, min_se=0.0):
-    print(f"Optimizing decision thresholds on validation split using Random Sweep (min_se={min_se})...")
-    best_score = 0.0
+def optimize_thresholds(val_probs, val_labels, min_se=0.0, calib_metric='mean'):
+    print(f"Optimizing decision thresholds on validation split using Random Sweep (min_se={min_se}, metric={calib_metric})...")
+    best_metric_val = 0.0
     best_thresholds = np.ones(4)
     
     # Track the best overall score in case no trials satisfy the constraint
-    best_score_fallback = 0.0
+    best_metric_fallback = 0.0
     best_thresholds_fallback = np.ones(4)
     
     np.random.seed(42)
@@ -272,29 +272,39 @@ def optimize_thresholds(val_probs, val_labels, min_se=0.0):
         
         se, sp, score = calculate_icbhi_score(val_labels, preds)
         
+        if calib_metric == 'product':
+            metric_val = se * sp
+        elif calib_metric == 'harmonic':
+            metric_val = 2 * (se * sp) / (se + sp + 1e-8)
+        else:
+            metric_val = score
+            
         # Track overall fallback
-        if score > best_score_fallback:
-            best_score_fallback = score
+        if metric_val > best_metric_fallback:
+            best_metric_fallback = metric_val
             best_thresholds_fallback = thresholds
             
         if min_se > 0:
             if se >= min_se:
-                if score > best_score:
-                    best_score = score
+                if metric_val > best_metric_val:
+                    best_metric_val = metric_val
                     best_thresholds = thresholds
         else:
-            if score > best_score:
-                best_score = score
+            if metric_val > best_metric_val:
+                best_metric_val = metric_val
                 best_thresholds = thresholds
                 
-    if min_se > 0 and best_score == 0.0:
+    if min_se > 0 and best_metric_val == 0.0:
         print(f"Warning: No threshold combination satisfied the constraint Se >= {min_se:.2f}. Falling back to best unconstrained score.")
-        best_score = best_score_fallback
         best_thresholds = best_thresholds_fallback
         
+    # Recalculate best metrics with chosen thresholds
+    adjusted_probs = val_probs / best_thresholds
+    preds = np.argmax(adjusted_probs, axis=1)
+    se, sp, score = calculate_icbhi_score(val_labels, preds)
     print(f"Optimal Thresholds Found: {best_thresholds}")
-    print(f"Best Validation ICBHI Score (Calibrated): {best_score*100:.2f}%")
-    return best_thresholds, best_score
+    print(f"Best Validation Stats: Se={se*100:.2f}%, Sp={sp*100:.2f}%, ICBHI Score={score*100:.2f}%")
+    return best_thresholds, score
 
 def evaluate_test(model, test_loader, thresholds=None, multitask=False):
     model.eval()
@@ -405,7 +415,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                    tune_only=False, eval_only=False, use_augmentations=True, 
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
                    label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns',
-                   no_early_stopping=False, min_se=0.0, weighted_loss=False):
+                   no_early_stopping=False, min_se=0.0, weighted_loss=False, calib_metric='mean'):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
@@ -559,7 +569,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
             val_loss, val_acc, val_se, val_sp, val_score, val_probs, val_labels = validate(model, val_loader, criterion)
         print(f"\nDefault Validation ICBHI Score: {val_score*100:.2f}% (Se: {val_se*100:.2f}%, Sp: {val_sp*100:.2f}%)")
         
-        thresholds, calibrated_val_score = optimize_thresholds(val_probs, val_labels, min_se=min_se)
+        thresholds, calibrated_val_score = optimize_thresholds(val_probs, val_labels, min_se=min_se, calib_metric=calib_metric)
         np.save(thresholds_path, thresholds)
         print(f"Optimized thresholds saved to {thresholds_path}")
     else:
@@ -621,6 +631,7 @@ def main():
     parser.add_argument('--no_early_stopping', action='store_true', help='Disable early stopping to train for full epochs')
     parser.add_argument('--min_se', type=float, default=0.0, help='Minimum sensitivity constraint for threshold calibration (0.0 to disable)')
     parser.add_argument('--weighted_loss', action='store_true', help='Enable class weighting in Focal Loss / CrossEntropy')
+    parser.add_argument('--calib_metric', type=str, default='mean', choices=['mean', 'product', 'harmonic'], help='Metric to optimize in threshold calibration')
     args = parser.parse_args()
     
     run_experiment(
@@ -643,7 +654,8 @@ def main():
         backbone=args.backbone,
         no_early_stopping=args.no_early_stopping,
         min_se=args.min_se,
-        weighted_loss=args.weighted_loss
+        weighted_loss=args.weighted_loss,
+        calib_metric=args.calib_metric
     )
 
 if __name__ == "__main__":
