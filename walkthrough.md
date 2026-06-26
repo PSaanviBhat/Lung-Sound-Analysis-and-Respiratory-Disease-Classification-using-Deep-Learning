@@ -28,7 +28,7 @@ This document summarizes the results of the 8 different ablation study experimen
 
 The figure below shows the validation ICBHI Score convergence curves for the key experiments over the training epochs:
 
-![Validation Convergence Comparison](evaluation_results\validation_score_comparison.png)
+![Validation Convergence Comparison](evaluation_results/validation_score_comparison.png)
 
 ---
 
