@@ -28,7 +28,7 @@ This document summarizes the results of the 8 different ablation study experimen
 
 The figure below shows the validation ICBHI Score convergence curves for the key experiments over the training epochs:
 
-![Validation Convergence Comparison](C:/Users/psaan/.gemini/antigravity/brain/b6b4ba09-9d6e-4837-beb0-45f22e883648/validation_score_comparison.png)
+![Validation Convergence Comparison](evaluation_results\validation_score_comparison.png)
 
 ---
 
@@ -53,12 +53,12 @@ The figure below shows the validation ICBHI Score convergence curves for the key
 
 ---
 
-## 4. Phase 13: SOTA Data Augmentations & Mixup
+## 4. SOTA Data Augmentations & Mixup
 
-To address overfitting and encourage smoother decision boundaries, we implemented our SOTA training pipeline inside the separate directory [src/sota/](file:///d:/Internship%20'26/Lung%20Disease/src/sota/).
+To address overfitting and encourage smoother decision boundaries, we implemented our SOTA training pipeline inside the separate directory [src/sota/](src\sota).
 
 ### Spectrogram-Level Advanced Augmentations
-To avoid the raw audio feature extraction bottleneck (627 ms/sample), we implement GPU-friendly equivalents directly on the pre-computed 3-channel spectrogram tensors inside [dataset.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/dataset.py):
+To avoid the raw audio feature extraction bottleneck (627 ms/sample), we implement GPU-friendly equivalents directly on the pre-computed 3-channel spectrogram tensors inside [dataset.py](src\dataset.py):
 *   **Time Shifting**: Circular roll along the time axis (width) by up to $\pm 10\%$ ($\pm 12$ pixels, corresponding to $\approx 280\text{ ms}$).
 *   **Frequency (Pitch) Shifting**: Circular roll along the frequency axis (height) by up to $\pm 2$ bins.
 *   **White Noise Injection**: Injecting random Gaussian noise ($\sigma \le 0.03$) directly onto spectrogram magnitude maps.
@@ -66,10 +66,10 @@ To avoid the raw audio feature extraction bottleneck (627 ms/sample), we impleme
 
 We verified the augmentations using a visual sanity check script. Below is the saved visualization comparing original vs. augmented spectrogram features (Mel, CQT, CWT):
 
-![Augmentation Visual Check](C:/Users/psaan/.gemini/antigravity/brain/b6b4ba09-9d6e-4837-beb0-45f22e883648/test_sota_augment.png)
+![Augmentation Visual Check](evaluation_results\test_sota_augment.png)
 
 ### Mixup Regularization
-In the training loop of [run_experiments.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/run_experiments.py), we implemented Mixup. For each batch:
+In the training loop of [run_experiments.py](src\experiments\run_experiments.py), we implemented Mixup. For each batch:
 *   We sample a mixup weight $\lambda \sim \text{Beta}(0.2, 0.2)$.
 *   We mix batch inputs: $x_{\text{mix}} = \lambda x_1 + (1-\lambda) x_2$.
 *   We convert targets to one-hot and mix them: $y_{\text{mix}} = \lambda y_1 + (1-\lambda) y_2$.
@@ -89,9 +89,9 @@ This confirms that the SOTA training pipeline executes correctly, saves checkpoi
 
 ---
 
-## 5. Phase 14: SOTA Loss Function Upgrade
+## 5. SOTA Loss Function Upgrade
 
-To address class imbalance and regularize predictions, we upgraded our SOTA loss functions inside [run_experiments.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/run_experiments.py).
+To address class imbalance and regularize predictions, we upgraded our SOTA loss functions inside [run_experiments.py](src\experiments\run_experiments.py).
 
 ### Multiclass Focal Loss
 We implemented a custom PyTorch module `FocalLoss` that calculates:
@@ -99,11 +99,7 @@ $$L_{\text{focal}} = -\sum_{c=1}^{C} y_c \cdot (1 - p_c)^\gamma \cdot \log(p_c)$
 *   **Gamma ($\gamma = 2.0$)**: Down-weights easy "Normal" samples (where $p_c \to 1$) and scales up gradients for hard/rare abnormal classes.
 *   **Soft Targets Compatibility**: Designed to accept both 1D target classes and 2D target probability distributions, allowing seamless composition with Mixup and Label Smoothing.
 
-We verified it with an isolated test script:
-```bash
-python C:\Users\psaan\.gemini\antigravity\brain\b6b4ba09-9d6e-4837-beb0-45f22e883648\scratch\test_focal_loss.py
-```
-*(All tests passed successfully, confirming exact equivalence to standard cross-entropy when $\gamma=0$, and proper $0.0271$ easy-to-hard ratio scaling when $\gamma=2.0$).*
+
 
 ### Label Smoothing
 We smooth ground truth targets by a factor of $\epsilon = 0.1$:
@@ -124,12 +120,12 @@ This verifies that Focal Loss and Label Smoothing integrate perfectly with Mixup
 
 ---
 
-## 6. Phase 15: Pretrained Audio Backbones (PANNs Cnn14)
+## 6. Pretrained Audio Backbones (PANNs Cnn14)
 
 To boost model performance and leverage large-scale audio representation learning, we integrated pre-trained convolutional backbones from the **PANNs (Pretrained Audio Neural Networks)** model family, specifically the `Cnn14` architecture.
 
 ### Model Architecture & Multi-Channel Adaptation
-We defined the model architectures in a new module [models.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/models.py):
+We defined the model architectures in a new module [models.py](src\experiments\models.py):
 *   **`ConvBlock`**: Consists of two 2D convolutions with batch normalization and ReLU activations.
 *   **`Cnn14Backbone`**: Consists of 6 `ConvBlock` modules, outputting feature maps of shape `(B, 2048, 4, 4)`.
 *   **`BaselineCNNPANN`**: Uses `Cnn14Backbone` with a global pooling layer (sum of max and mean pool) and a classification head (`fc1` + `fc_final`).
@@ -140,7 +136,7 @@ $$\text{weights}_{\text{new}} = \frac{\text{weights}_{\text{pretrained}}.\text{r
 This maps the mono-channel weights to multi-channel weights while maintaining activation scaling.
 
 ### Automated Testing & Weight Loading
-We verified shape compatibility and loading of weights using [test_panns.py](file:///d:/Internship%20'26/Lung%20Disease/scratch/test_panns.py):
+We verified shape compatibility and loading of weights using [test_panns.py](scratch\test_panns.py):
 ```bash
 python scratch/test_panns.py
 ```
@@ -169,25 +165,25 @@ The dry runs verify that the pre-trained models load correctly, train successful
 
 ---
 
-## 7. Phase 16: Multi-Task Learning (Joint Cycle & Pathology Classification)
+## 7. Multi-Task Learning (Joint Cycle & Pathology Classification)
 
 To regularize the model and leverage clinical diagnostic relationships, we implemented multi-task learning (MTL), which enables joint cycle-level sound classification (4 classes) and patient-level pathology diagnosis (3 classes: COPD, URTI, Healthy).
 
 ### Pathology Mapping and Filtering
-We implemented the mapping and filtering in [dataset.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/dataset.py):
+We implemented the mapping and filtering in [dataset.py](src\dataset.py):
 *   When `--multitask` is active, the dataset filters out subjects with rare diagnoses (e.g. Asthma, Pneumonia, Bronchiolitis) representing less than 10% of total samples.
 *   Pathologies are mapped to integers: COPD $\to 0$, URTI $\to 1$, Healthy $\to 2$.
 *   This leaves 6,311 cycles for multi-task training, while leaving the full 6,898-cycle dataset intact for standard single-task training.
 
 ### Model Architecture and Joint Loss
-We modified `BaselineCNNPANN` and `CNNLSTMPANN` in [models.py](file:///d:/Internship%20'26/Lung%20Disease/src/sota/models.py) to add a second classification head `self.fc_pathology`. Under multi-task training, the shared features branch into both heads, returning both `logits_cycle` and `logits_pathology`.
+We modified `BaselineCNNPANN` and `CNNLSTMPANN` in [models.py](src\experiments\models.py) to add a second classification head `self.fc_pathology`. Under multi-task training, the shared features branch into both heads, returning both `logits_cycle` and `logits_pathology`.
 
 The joint loss formulation is:
 $$L_{\text{joint}} = L_{\text{cycle}} + \alpha \cdot L_{\text{pathology}}$$
 where $\alpha$ is set via `--pathology_weight` (default 1.0). Both losses are optimized using Focal Loss and smoothed labels under Mixup augmentation.
 
 ### Verification and Dry Run Results
-We verified the multi-task pipeline components using a unit test script [test_multitask.py](file:///d:/Internship%20'26/Lung%20Disease/scratch/test_multitask.py):
+We verified the multi-task pipeline components using a unit test script [test_multitask.py](scratch\test_multitask.py):
 ```bash
 python scratch/test_multitask.py
 ```
@@ -247,13 +243,13 @@ The 50-epoch sweeps with class-weighted Focal Loss and validation calibration co
 
 ---
 
-## 9. Phase 18: Balanced Calibration & Single-Correction Training Results
+## 9. Balanced Calibration & Single-Correction Training Results
 
 In this phase, we evaluated two strategies to optimize the sensitivity-specificity trade-off:
 1. **Geometric Product Calibration** ($Se \times Sp$) on the existing 50-epoch checkpoints (which had weighted loss).
 2. **Single-Correction Retraining** (batch balancing using `WeightedRandomSampler` but keeping loss functions unweighted) followed by Geometric Product calibration.
 
-### Phase 18 Results Comparison Table
+### Results Comparison Table
 
 The results obtained on the test split for both steps are compiled below:
 
