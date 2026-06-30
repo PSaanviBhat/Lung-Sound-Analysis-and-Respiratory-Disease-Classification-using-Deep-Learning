@@ -1,12 +1,13 @@
 import sys
 import os
 import torch
+import torch.optim as optim
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.sota.models import BaselineCNNResNet, CNNLSTMResNet, BaselineCNNPANN, CNNLSTMPANN
-from src.sota.loss import SupervisedContrastiveLoss
+from src.sota.loss import SupervisedContrastiveLoss, DynamicMultiTaskLoss
 
-def test_models_and_contrastive_loss():
+def test_models_and_losses():
     # Test parameters
     batch_size = 4
     in_channels = 3
@@ -96,10 +97,9 @@ def test_models_and_contrastive_loss():
     # 5. Test SupervisedContrastiveLoss computations
     print("--- Testing SupervisedContrastiveLoss ---")
     contrastive_criterion = SupervisedContrastiveLoss(temperature=0.07)
+    features_a = torch.randn(batch_size, 256)
     
     # Case A: Batch with duplicate patient IDs (valid positive pairs exist)
-    features_a = torch.randn(batch_size, 256)
-    # Patients: Patient 101 (2 cycles), Patient 102 (2 cycles)
     patient_ids_a = torch.tensor([101, 102, 101, 102], dtype=torch.long)
     loss_a = contrastive_criterion(features_a, patient_ids_a)
     print(f"Supervised Contrastive Loss (with duplicates): {loss_a.item():.4f} (Expected: non-zero finite value)")
@@ -110,8 +110,33 @@ def test_models_and_contrastive_loss():
     loss_b = contrastive_criterion(features_a, patient_ids_b)
     print(f"Supervised Contrastive Loss (all unique patients): {loss_b.item():.4f} (Expected: 0.0000)")
     assert loss_b.item() == 0.0, f"Loss should be exactly 0.0 when no duplicate patients exist in batch, got {loss_b.item()}!"
+    print("Success!\n")
+
+    # 6. Test DynamicMultiTaskLoss weighting parameters optimization
+    print("--- Testing DynamicMultiTaskLoss (Homoscedastic Uncertainty) ---")
+    dynamic_loss = DynamicMultiTaskLoss(num_tasks=3)
+    print(f"Initial log_vars parameters: {dynamic_loss.log_vars.data}")
     
+    # Dummy active losses: cycle_loss, pathology_loss, contrastive_loss
+    l_cycle = torch.tensor(1.5, requires_grad=True)
+    l_path = torch.tensor(0.8, requires_grad=True)
+    l_contr = torch.tensor(2.1, requires_grad=True)
+    
+    # Setup optimizer to include both loss parameters and model params
+    optimizer = optim.Adam(dynamic_loss.parameters(), lr=0.1)
+    
+    # Forward pass through dynamic loss weighting
+    combined_loss = dynamic_loss([l_cycle, l_path, l_contr])
+    print(f"Combined Dynamic Loss: {combined_loss.item():.4f}")
+    
+    # Backward pass and optimization step
+    optimizer.zero_grad()
+    combined_loss.backward()
+    optimizer.step()
+    
+    print(f"Updated log_vars parameters after backward pass: {dynamic_loss.log_vars.data}")
+    assert not torch.allclose(dynamic_loss.log_vars.data, torch.zeros(3)), "Parameters log_vars should have updated after optimization!"
     print("Success!\n")
 
 if __name__ == "__main__":
-    test_models_and_contrastive_loss()
+    test_models_and_losses()

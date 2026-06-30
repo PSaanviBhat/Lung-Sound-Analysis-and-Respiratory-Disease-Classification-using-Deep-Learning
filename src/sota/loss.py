@@ -89,3 +89,19 @@ class SupervisedContrastiveLoss(nn.Module):
         # Loss is the negative mean of these probabilities
         loss = -torch.mean(mean_log_prob_pos)
         return loss
+
+class DynamicMultiTaskLoss(nn.Module):
+    def __init__(self, num_tasks=2):
+        super(DynamicMultiTaskLoss, self).__init__()
+        # Initialize log-variance parameters (s = log(sigma^2))
+        # Initializing to 0.0 makes the initial scaling weight exp(-s) = 1.0
+        self.log_vars = nn.Parameter(torch.zeros(num_tasks))
+
+    def forward(self, losses):
+        # losses: list/tuple of PyTorch loss tensors
+        assert len(losses) == len(self.log_vars), f"Expected {len(self.log_vars)} losses, got {len(losses)}"
+        total_loss = 0.0
+        for i, loss in enumerate(losses):
+            precision = torch.exp(-self.log_vars[i])
+            total_loss += precision * loss + 0.5 * self.log_vars[i]
+        return total_loss
