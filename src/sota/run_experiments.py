@@ -415,14 +415,16 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                    tune_only=False, eval_only=False, use_augmentations=True, 
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
                    label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns',
-                   no_early_stopping=False, min_se=0.0, weighted_loss=False, calib_metric='mean'):
+                   no_early_stopping=False, min_se=0.0, weighted_loss=False, calib_metric='mean', cross_attention=False):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
     config_name = config_info['name']
     
     # Save SOTA checkpoints separately by using the _sota suffix
-    suffix = "_sota_multitask" if multitask else "_sota"
+    feat_suffix = "_crossattn" if cross_attention else ""
+    task_suffix = "_multitask" if multitask else ""
+    suffix = f"_sota{feat_suffix}{task_suffix}"
     checkpoint_name = f"{model_type}_config_{config_key}_{backbone}{suffix}.pth"
     model_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
     thresholds_path = os.path.join(CHECKPOINT_DIR, f"{model_type}_config_{config_key}_{backbone}{suffix}_thresholds.npy")
@@ -453,14 +455,14 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     pretrained = not (eval_only or tune_only)
     if backbone == 'panns':
         if model_type == 'cnn':
-            model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+            model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
         else:
-            model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+            model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
     else: # resnet
         if model_type == 'cnn':
-            model = BaselineCNNResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+            model = BaselineCNNResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
         else:
-            model = CNNLSTMResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask).to(DEVICE)
+            model = CNNLSTMResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
         
     # Calculate class weights for loss function
     if weighted_loss:
@@ -632,6 +634,7 @@ def main():
     parser.add_argument('--min_se', type=float, default=0.0, help='Minimum sensitivity constraint for threshold calibration (0.0 to disable)')
     parser.add_argument('--weighted_loss', action='store_true', help='Enable class weighting in Focal Loss / CrossEntropy')
     parser.add_argument('--calib_metric', type=str, default='mean', choices=['mean', 'product', 'harmonic'], help='Metric to optimize in threshold calibration')
+    parser.add_argument('--cross_attention', action='store_true', help='Enable cross-attention late fusion block')
     args = parser.parse_args()
     
     run_experiment(
@@ -655,7 +658,8 @@ def main():
         no_early_stopping=args.no_early_stopping,
         min_se=args.min_se,
         weighted_loss=args.weighted_loss,
-        calib_metric=args.calib_metric
+        calib_metric=args.calib_metric,
+        cross_attention=args.cross_attention
     )
 
 if __name__ == "__main__":
