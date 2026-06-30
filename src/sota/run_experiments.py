@@ -31,35 +31,7 @@ CHECKPOINT_DIR = "checkpoints"
 LOG_DIR = "training_logs"
 OUTPUT_DIR = "evaluation_results"
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        log_probs = torch.log_softmax(inputs, dim=1)
-        probs = torch.exp(log_probs)
-        
-        if targets.dim() == 1:
-            targets = torch.nn.functional.one_hot(targets, num_classes=inputs.size(1)).float()
-            
-        focal_weight = (1.0 - probs) ** self.gamma
-        loss = -targets * focal_weight * log_probs
-        
-        if self.alpha is not None:
-            alpha = self.alpha.to(inputs.device)
-            loss = loss * alpha.unsqueeze(0)
-            
-        loss = torch.sum(loss, dim=1)
-        
-        if self.reduction == 'mean':
-            return torch.mean(loss)
-        elif self.reduction == 'sum':
-            return torch.sum(loss)
-        else:
-            return loss
+from loss import FocalLoss, SupervisedContrastiveLoss
 
 class EarlyStopping:
     def __init__(self, patience=10, verbose=True, delta=0):
@@ -113,11 +85,14 @@ def calculate_icbhi_score(y_true, y_pred):
     
     return sensitivity, specificity, icbhi_score
 
-def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_alpha=0.2, mixup_prob=0.8, label_smoothing_factor=0.1, multitask=False, pathology_weight=1.0, criterion_pathology=None):
+def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_alpha=0.2, mixup_prob=0.8, 
+                label_smoothing_factor=0.1, multitask=False, pathology_weight=1.0, criterion_pathology=None,
+                contrastive_weight=0.0, contrastive_criterion=None):
     model.train()
     running_loss = 0.0
     running_cycle_loss = 0.0
     running_pathology_loss = 0.0
+    running_contrast = 0.0
     
     all_preds = []
     all_labels = []
@@ -126,11 +101,12 @@ def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_
     all_pathology_labels = []
     
     for batch in tqdm(loader, desc="Training", leave=False):
+        batch_patient = batch[-1].to(DEVICE)
         if multitask:
-            batch_x, batch_y, batch_pathology = batch
+            batch_x, batch_y, batch_pathology = batch[0], batch[1], batch[2]
             batch_x, batch_y, batch_pathology = batch_x.to(DEVICE), batch_y.to(DEVICE), batch_pathology.to(DEVICE)
         else:
-            batch_x, batch_y = batch
+            batch_x, batch_y = batch[0], batch[1]
             batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
             
         optimizer.zero_grad()
@@ -170,6 +146,12 @@ def train_epoch(model, loader, criterion, optimizer, scaler, mixup=False, mixup_
             else:
                 outputs = model(mixed_x)
                 loss = criterion(outputs, targets)
+                
+            if contrastive_weight > 0 and contrastive_criterion is not None:
+                features = model.last_shared_features
+                loss_contrastive = contrastive_criterion(features, batch_patient)
+                loss = loss + contrastive_weight * loss_contrastive
+                running_contrast += loss_contrastive.item() * batch_x.size(0)
             
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -212,10 +194,10 @@ def validate(model, loader, criterion, multitask=False, pathology_weight=1.0, cr
     
     for batch in tqdm(loader, desc="Validating", leave=False):
         if multitask:
-            batch_x, batch_y, batch_pathology = batch
+            batch_x, batch_y, batch_pathology = batch[0], batch[1], batch[2]
             batch_x, batch_y, batch_pathology = batch_x.to(DEVICE), batch_y.to(DEVICE), batch_pathology.to(DEVICE)
         else:
-            batch_x, batch_y = batch
+            batch_x, batch_y = batch[0], batch[1]
             batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
             
         with autocast():
@@ -318,14 +300,14 @@ def evaluate_test(model, test_loader, thresholds=None, multitask=False):
     with torch.no_grad():
         for batch in test_loader:
             if multitask:
-                batch_x, batch_y, batch_pathology = batch
+                batch_x, batch_y, batch_pathology = batch[0], batch[1], batch[2]
                 batch_x = batch_x.to(DEVICE)
                 with autocast():
                     outputs, outputs_pathology = model(batch_x)
                 all_pathology_logits.append(outputs_pathology.cpu().numpy())
                 all_pathology_labels.extend(batch_pathology.numpy())
             else:
-                batch_x, batch_y = batch
+                batch_x, batch_y = batch[0], batch[1]
                 batch_x = batch_x.to(DEVICE)
                 with autocast():
                     outputs = model(batch_x)
@@ -416,7 +398,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
                    label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns',
                    no_early_stopping=False, min_se=0.0, weighted_loss=False, calib_metric='mean', cross_attention=False,
-                   sequence_len=4, use_conformer=False):
+                   sequence_len=4, use_conformer=False, contrastive_weight=0.0):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
@@ -428,6 +410,8 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         feat_suffix += f"_seqlen{sequence_len}"
     if use_conformer:
         feat_suffix += "_conformer"
+    if contrastive_weight > 0:
+        feat_suffix += f"_contrast{contrastive_weight}"
     task_suffix = "_multitask" if multitask else ""
     suffix = f"_sota{feat_suffix}{task_suffix}"
     checkpoint_name = f"{model_type}_config_{config_key}_{backbone}{suffix}.pth"
@@ -446,7 +430,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     print(f"Device: {DEVICE}")
     print(f"Input Channels: {in_channels} (Indices: {channels})")
     print(f"SOTA Augmentations: {use_augmentations} | Mixup: {mixup} (alpha={mixup_alpha}, prob={mixup_prob})")
-    print(f"Label Smoothing: {label_smoothing} | Focal Loss Gamma: {focal_gamma}")
+    print(f"Label Smoothing: {label_smoothing} | Focal Loss Gamma: {focal_gamma} | Contrastive Weight: {contrastive_weight}")
     print(f"Multi-Task Learning: {multitask} (Weight: {pathology_weight})")
     
     print("Loading dataloaders...")
@@ -499,6 +483,7 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         scaler = GradScaler()
         
         early_stopping = EarlyStopping(patience=patience, verbose=True)
+        contrastive_criterion = SupervisedContrastiveLoss(temperature=0.07) if contrastive_weight > 0 else None
         
         history = {
             'train_loss': [], 'train_acc': [], 'train_score': [],
@@ -516,7 +501,8 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                     model, train_loader, criterion, optimizer, scaler,
                     mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob,
                     label_smoothing_factor=label_smoothing, multitask=True,
-                    pathology_weight=pathology_weight, criterion_pathology=criterion_pathology
+                    pathology_weight=pathology_weight, criterion_pathology=criterion_pathology,
+                    contrastive_weight=contrastive_weight, contrastive_criterion=contrastive_criterion
                 )
                 val_loss, val_acc, val_se, val_sp, val_score, _, _, val_path_acc = validate(
                     model, val_loader, criterion, multitask=True,
@@ -526,7 +512,8 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                 train_loss, train_acc, train_score = train_epoch(
                     model, train_loader, criterion, optimizer, scaler,
                     mixup=mixup, mixup_alpha=mixup_alpha, mixup_prob=mixup_prob,
-                    label_smoothing_factor=label_smoothing
+                    label_smoothing_factor=label_smoothing,
+                    contrastive_weight=contrastive_weight, contrastive_criterion=contrastive_criterion
                 )
                 val_loss, val_acc, val_se, val_sp, val_score, _, _ = validate(model, val_loader, criterion)
             
@@ -642,6 +629,7 @@ def main():
     parser.add_argument('--cross_attention', action='store_true', help='Enable cross-attention late fusion block')
     parser.add_argument('--sequence_len', type=int, default=4, help='Sequence length for temporal modeling (default: 4 for baseline)')
     parser.add_argument('--conformer', action='store_true', help='Use Conformer instead of BiLSTM for sequence modeling')
+    parser.add_argument('--contrastive_weight', type=float, default=0.0, help='Weight factor for patient-invariant contrastive loss (default: 0.0 to disable)')
     args = parser.parse_args()
     
     run_experiment(
@@ -668,7 +656,8 @@ def main():
         calib_metric=args.calib_metric,
         cross_attention=args.cross_attention,
         sequence_len=args.sequence_len,
-        use_conformer=args.conformer
+        use_conformer=args.conformer,
+        contrastive_weight=args.contrastive_weight
     )
 
 if __name__ == "__main__":

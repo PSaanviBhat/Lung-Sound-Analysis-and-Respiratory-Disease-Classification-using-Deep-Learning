@@ -265,7 +265,7 @@ class CrossAttentionFusion(nn.Module):
 
 
 # =====================================================================
-# NEW: CONFORMER ARCHITECTURE BLOCKS (PHASE 2)
+# CONFORMER ARCHITECTURE BLOCKS (PHASE 2)
 # =====================================================================
 
 class FeedForward(nn.Module):
@@ -383,6 +383,9 @@ class BaselineCNNPANN(nn.Module):
         x_shared = F.relu_(self.fc1(x))
         x_shared = F.dropout(x_shared, p=0.5, training=self.training)
         
+        # Save shared features (Phase 3)
+        self.last_shared_features = x_shared
+        
         logits_cycle = self.fc_final(x_shared)
         if self.multitask:
             logits_pathology = self.fc_pathology(x_shared)
@@ -473,6 +476,9 @@ class CNNLSTMPANN(nn.Module):
             lstm_out, _ = self.lstm(seq_features)
             final_state = lstm_out[:, -1, :]  # Last step (B, 512)
             
+        # Save shared features (Phase 3)
+        self.last_shared_features = final_state
+        
         logits_cycle = self.fc(final_state)
         
         if self.multitask:
@@ -510,6 +516,10 @@ class BaselineCNNResNet(nn.Module):
             fused_feats = self.fusion(branch_feats)  # (B, 512, 4, 4)
             pooled = self.avgpool(fused_feats)  # (B, 512, 1, 1)
             x_flat = torch.flatten(pooled, 1)  # (B, 512)
+            
+            # Save shared features (Phase 3)
+            self.last_shared_features = x_flat
+            
             logits_cycle = self.fc(x_flat)
             if self.multitask:
                 logits_pathology = self.fc_pathology(x_flat)
@@ -517,7 +527,19 @@ class BaselineCNNResNet(nn.Module):
             return logits_cycle
         else:
             if not self.multitask:
-                return self.resnet(x)
+                # Save shared features before ResNet's fc
+                x_conv = self.resnet.conv1(x)
+                x_conv = self.resnet.bn1(x_conv)
+                x_conv = self.resnet.relu(x_conv)
+                x_conv = self.resnet.maxpool(x_conv)
+                x_conv = self.resnet.layer1(x_conv)
+                x_conv = self.resnet.layer2(x_conv)
+                x_conv = self.resnet.layer3(x_conv)
+                x_conv = self.resnet.layer4(x_conv)
+                pooled = self.resnet.avgpool(x_conv)
+                x_flat = torch.flatten(pooled, 1)
+                self.last_shared_features = x_flat
+                return self.resnet.fc(x_flat)
                 
             x = self.resnet.conv1(x)
             x = self.resnet.bn1(x)
@@ -530,10 +552,13 @@ class BaselineCNNResNet(nn.Module):
             x = self.resnet.layer4(x)
 
             x = self.resnet.avgpool(x)
-            x = torch.flatten(x, 1)
+            x_flat = torch.flatten(x, 1)
             
-            logits_cycle = self.resnet.fc(x)
-            logits_pathology = self.fc_pathology(x)
+            # Save shared features (Phase 3)
+            self.last_shared_features = x_flat
+            
+            logits_cycle = self.resnet.fc(x_flat)
+            logits_pathology = self.fc_pathology(x_flat)
             return logits_cycle, logits_pathology
 
 class CNNLSTMResNet(nn.Module):
@@ -619,6 +644,9 @@ class CNNLSTMResNet(nn.Module):
             lstm_out, _ = self.lstm(seq_features)
             final_state = lstm_out[:, -1, :]
             
+        # Save shared features (Phase 3)
+        self.last_shared_features = final_state
+        
         logits_cycle = self.fc(final_state)
         if self.multitask:
             logits_pathology = self.fc_pathology(final_state)

@@ -110,11 +110,12 @@ class LungSoundDatasetSOTA(Dataset):
         if self.split == 'train' and self.transform:
             tensor = self.transform(tensor)
             
+        patient_id = int(row['patient_id'])
         if self.multitask:
             pathology_label = int(row['pathology_label'])
-            return tensor, label, pathology_label
+            return tensor, label, pathology_label, patient_id
             
-        return tensor, label
+        return tensor, label, patient_id
 
     def get_labels(self):
         return self.df['class_label'].values
