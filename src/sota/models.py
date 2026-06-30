@@ -136,7 +136,7 @@ def load_panns_state_dict(model, checkpoint_path, in_channels=3):
 
 
 # =====================================================================
-# NEW: MULTI-BRANCH ENCODERS & CROSS-ATTENTION FUSION
+# MULTI-BRANCH ENCODERS & CROSS-ATTENTION FUSION (PHASE 1)
 # =====================================================================
 
 class ResNetBranch(nn.Module):
@@ -265,7 +265,77 @@ class CrossAttentionFusion(nn.Module):
 
 
 # =====================================================================
-# UPDATED SOTA MODELS USING CROSS-ATTENTION
+# NEW: CONFORMER ARCHITECTURE BLOCKS (PHASE 2)
+# =====================================================================
+
+class FeedForward(nn.Module):
+    def __init__(self, d_model, expansion_factor=4, dropout=0.1):
+        super(FeedForward, self).__init__()
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * expansion_factor),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * expansion_factor, d_model),
+            nn.Dropout(dropout)
+        )
+        
+    def forward(self, x):
+        return self.ff(x)
+
+class ConformerConvModule(nn.Module):
+    def __init__(self, d_model, kernel_size=15, expansion_factor=2, dropout=0.1):
+        super(ConformerConvModule, self).__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.pointwise_conv1 = nn.Conv1d(d_model, d_model * expansion_factor, kernel_size=1)
+        self.depthwise_conv = nn.Conv1d(
+            d_model * expansion_factor, 
+            d_model * expansion_factor, 
+            kernel_size=kernel_size, 
+            padding=(kernel_size - 1) // 2,
+            groups=d_model * expansion_factor
+        )
+        self.bn = nn.BatchNorm1d(d_model * expansion_factor)
+        self.pointwise_conv2 = nn.Conv1d(d_model * expansion_factor, d_model, kernel_size=1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x shape: (B, T, D)
+        x_norm = self.norm(x)
+        x_conv = x_norm.transpose(1, 2)  # (B, D, T)
+        x_conv = F.silu(self.pointwise_conv1(x_conv))
+        x_conv = self.depthwise_conv(x_conv)
+        x_conv = F.silu(self.bn(x_conv))
+        x_conv = self.pointwise_conv2(x_conv)
+        x_conv = self.dropout(x_conv)
+        return x_conv.transpose(1, 2)  # (B, T, D)
+
+class ConformerBlock(nn.Module):
+    def __init__(self, d_model, num_heads=4, kernel_size=15, dropout=0.1):
+        super(ConformerBlock, self).__init__()
+        self.ffn1 = FeedForward(d_model, expansion_factor=4, dropout=dropout)
+        self.attn = nn.MultiheadAttention(d_model, num_heads, batch_first=True, dropout=dropout)
+        self.norm_attn = nn.LayerNorm(d_model)
+        self.conv = ConformerConvModule(d_model, kernel_size=kernel_size, dropout=dropout)
+        self.norm_conv = nn.LayerNorm(d_model)
+        self.ffn2 = FeedForward(d_model, expansion_factor=4, dropout=dropout)
+        self.norm_final = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        # Macaron FFN
+        x = x + 0.5 * self.ffn1(x)
+        # Self-Attention
+        attn_out, _ = self.attn(x, x, x)
+        x = self.norm_attn(x + attn_out)
+        # Convolution Module
+        conv_out = self.conv(x)
+        x = self.norm_conv(x + conv_out)
+        # FFN
+        x = x + 0.5 * self.ffn2(x)
+        return self.norm_final(x)
+
+
+# =====================================================================
+# SOTA MODELS DEFINITION
 # =====================================================================
 
 class BaselineCNNPANN(nn.Module):
@@ -321,10 +391,12 @@ class BaselineCNNPANN(nn.Module):
         return logits_cycle
 
 class CNNLSTMPANN(nn.Module):
-    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False, cross_attention=False):
+    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False, cross_attention=False, sequence_len=4, use_conformer=False):
         super(CNNLSTMPANN, self).__init__()
         self.multitask = multitask
         self.cross_attention = cross_attention
+        self.sequence_len = sequence_len
+        self.use_conformer = use_conformer
         
         if cross_attention:
             self.multi_branch = MultiBranchPANNs(in_channels=in_channels, pretrained=pretrained)
@@ -335,19 +407,31 @@ class CNNLSTMPANN(nn.Module):
                 checkpoint_path = download_panns_weights()
                 load_panns_state_dict(self.backbone, checkpoint_path, in_channels=in_channels)
                 
-        # BiLSTM input_size is 2048 * 4 = 8192
-        self.lstm = nn.LSTM(
-            input_size=2048 * 4,
-            hidden_size=256,
-            num_layers=2,
-            bidirectional=True,
-            batch_first=True,
-            dropout=0.3
-        )
-        
-        # Classifier Head (BiLSTM output size is hidden_size * 2 = 512)
+        # High-res sequence projection
+        if sequence_len > 4:
+            self.time_project = nn.Linear(16, sequence_len)
+            seq_dim = 2048
+        else:
+            seq_dim = 2048 * 4
+            
+        if use_conformer:
+            self.feat_project = nn.Linear(seq_dim, 256)
+            self.conformer = nn.Sequential(*[ConformerBlock(d_model=256, num_heads=4) for _ in range(2)])
+            fc_input_dim = 256
+        else:
+            self.lstm = nn.LSTM(
+                input_size=seq_dim,
+                hidden_size=256,
+                num_layers=2,
+                bidirectional=True,
+                batch_first=True,
+                dropout=0.3
+            )
+            fc_input_dim = 512
+            
+        # Classifier Head
         self.fc = nn.Sequential(
-            nn.Linear(512, 128),
+            nn.Linear(fc_input_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, num_classes)
@@ -355,7 +439,7 @@ class CNNLSTMPANN(nn.Module):
         
         if multitask:
             self.fc_pathology = nn.Sequential(
-                nn.Linear(512, 128),
+                nn.Linear(fc_input_dim, 128),
                 nn.ReLU(),
                 nn.Dropout(0.3),
                 nn.Linear(128, 3)
@@ -369,18 +453,26 @@ class CNNLSTMPANN(nn.Module):
             
         b, c, h, w = spatial_maps.shape
         
-        # Format sequence: (B, Time_Steps, Feature_Dim)
-        # Treat width (axis 3) as the sequence length (4 steps)
-        seq_features = spatial_maps.permute(0, 3, 1, 2).contiguous()  # (B, 4, 2048, 4)
-        seq_features = seq_features.view(b, w, c * h)  # (B, 4, 8192)
-        
-        # LSTM
-        lstm_out, _ = self.lstm(seq_features)  # (B, 4, 512)
-        
-        # Final step state
-        final_state = lstm_out[:, -1, :]  # Shape: (B, 512)
-        
-        # Classification
+        if self.sequence_len > 4:
+            # Flatten spatial dimensions
+            seq_feats = spatial_maps.flatten(2)  # (B, C, 16)
+            # Project time dimension to sequence_len
+            seq_feats = self.time_project(seq_feats)  # (B, C, sequence_len)
+            # Transpose to (B, sequence_len, C)
+            seq_features = seq_feats.transpose(1, 2)
+        else:
+            # Baseline mode (sequence length 4, features 8192)
+            seq_features = spatial_maps.permute(0, 3, 1, 2).contiguous()
+            seq_features = seq_features.view(b, w, c * h)
+            
+        if self.use_conformer:
+            seq_features = self.feat_project(seq_features)
+            conformer_out = self.conformer(seq_features)  # (B, sequence_len, 256)
+            final_state = conformer_out.mean(dim=1)  # Mean pooling over time sequence (B, 256)
+        else:
+            lstm_out, _ = self.lstm(seq_features)
+            final_state = lstm_out[:, -1, :]  # Last step (B, 512)
+            
         logits_cycle = self.fc(final_state)
         
         if self.multitask:
@@ -445,10 +537,12 @@ class BaselineCNNResNet(nn.Module):
             return logits_cycle, logits_pathology
 
 class CNNLSTMResNet(nn.Module):
-    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False, cross_attention=False):
+    def __init__(self, in_channels=3, num_classes=4, pretrained=True, multitask=False, cross_attention=False, sequence_len=4, use_conformer=False):
         super(CNNLSTMResNet, self).__init__()
         self.multitask = multitask
         self.cross_attention = cross_attention
+        self.sequence_len = sequence_len
+        self.use_conformer = use_conformer
         
         if cross_attention:
             self.multi_branch = MultiBranchResNet(in_channels=in_channels, pretrained=pretrained)
@@ -460,17 +554,30 @@ class CNNLSTMResNet(nn.Module):
                 resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
             self.spatial_extractor = nn.Sequential(*list(resnet.children())[:-2])
             
-        self.lstm = nn.LSTM(
-            input_size=512 * 4, 
-            hidden_size=256, 
-            num_layers=2, 
-            bidirectional=True, 
-            batch_first=True, 
-            dropout=0.3
-        )
+        # High-res sequence projection
+        if sequence_len > 4:
+            self.time_project = nn.Linear(16, sequence_len)
+            seq_dim = 512
+        else:
+            seq_dim = 512 * 4
+            
+        if use_conformer:
+            self.feat_project = nn.Linear(seq_dim, 256)
+            self.conformer = nn.Sequential(*[ConformerBlock(d_model=256, num_heads=4) for _ in range(2)])
+            fc_input_dim = 256
+        else:
+            self.lstm = nn.LSTM(
+                input_size=seq_dim, 
+                hidden_size=256, 
+                num_layers=2, 
+                bidirectional=True, 
+                batch_first=True, 
+                dropout=0.3
+            )
+            fc_input_dim = 512
         
         self.fc = nn.Sequential(
-            nn.Linear(512, 128),
+            nn.Linear(fc_input_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, num_classes)
@@ -478,7 +585,7 @@ class CNNLSTMResNet(nn.Module):
         
         if multitask:
             self.fc_pathology = nn.Sequential(
-                nn.Linear(512, 128),
+                nn.Linear(fc_input_dim, 128),
                 nn.ReLU(),
                 nn.Dropout(0.3),
                 nn.Linear(128, 3)
@@ -492,12 +599,26 @@ class CNNLSTMResNet(nn.Module):
             
         b, c, h, w = spatial_maps.shape
         
-        seq_features = spatial_maps.permute(0, 3, 1, 2).contiguous()
-        seq_features = seq_features.view(b, w, c * h)
-        
-        lstm_out, _ = self.lstm(seq_features)
-        final_state = lstm_out[:, -1, :]
-        
+        if self.sequence_len > 4:
+            # Flatten spatial dimensions
+            seq_feats = spatial_maps.flatten(2)  # (B, C, 16)
+            # Project time dimension to sequence_len
+            seq_feats = self.time_project(seq_feats)  # (B, C, sequence_len)
+            # Transpose to (B, sequence_len, C)
+            seq_features = seq_feats.transpose(1, 2)
+        else:
+            # Baseline mode (sequence length 4, features 2048)
+            seq_features = spatial_maps.permute(0, 3, 1, 2).contiguous()
+            seq_features = seq_features.view(b, w, c * h)
+            
+        if self.use_conformer:
+            seq_features = self.feat_project(seq_features)
+            conformer_out = self.conformer(seq_features)  # (B, sequence_len, 256)
+            final_state = conformer_out.mean(dim=1)  # Mean pooling over time sequence (B, 256)
+        else:
+            lstm_out, _ = self.lstm(seq_features)
+            final_state = lstm_out[:, -1, :]
+            
         logits_cycle = self.fc(final_state)
         if self.multitask:
             logits_pathology = self.fc_pathology(final_state)

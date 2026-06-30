@@ -415,7 +415,8 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
                    tune_only=False, eval_only=False, use_augmentations=True, 
                    mixup=False, mixup_alpha=0.2, mixup_prob=0.8,
                    label_smoothing=0.1, focal_gamma=2.0, multitask=False, pathology_weight=1.0, backbone='panns',
-                   no_early_stopping=False, min_se=0.0, weighted_loss=False, calib_metric='mean', cross_attention=False):
+                   no_early_stopping=False, min_se=0.0, weighted_loss=False, calib_metric='mean', cross_attention=False,
+                   sequence_len=4, use_conformer=False):
     config_info = CONFIGS[config_key]
     channels = config_info['channels']
     in_channels = config_info['in_channels']
@@ -423,6 +424,10 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
     
     # Save SOTA checkpoints separately by using the _sota suffix
     feat_suffix = "_crossattn" if cross_attention else ""
+    if sequence_len > 4:
+        feat_suffix += f"_seqlen{sequence_len}"
+    if use_conformer:
+        feat_suffix += "_conformer"
     task_suffix = "_multitask" if multitask else ""
     suffix = f"_sota{feat_suffix}{task_suffix}"
     checkpoint_name = f"{model_type}_config_{config_key}_{backbone}{suffix}.pth"
@@ -457,12 +462,12 @@ def run_experiment(model_type, config_key, epochs=50, batch_size=32, learning_ra
         if model_type == 'cnn':
             model = BaselineCNNPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
         else:
-            model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
+            model = CNNLSTMPANN(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention, sequence_len=sequence_len, use_conformer=use_conformer).to(DEVICE)
     else: # resnet
         if model_type == 'cnn':
             model = BaselineCNNResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
         else:
-            model = CNNLSTMResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention).to(DEVICE)
+            model = CNNLSTMResNet(in_channels=in_channels, num_classes=4, pretrained=pretrained, multitask=multitask, cross_attention=cross_attention, sequence_len=sequence_len, use_conformer=use_conformer).to(DEVICE)
         
     # Calculate class weights for loss function
     if weighted_loss:
@@ -635,6 +640,8 @@ def main():
     parser.add_argument('--weighted_loss', action='store_true', help='Enable class weighting in Focal Loss / CrossEntropy')
     parser.add_argument('--calib_metric', type=str, default='mean', choices=['mean', 'product', 'harmonic'], help='Metric to optimize in threshold calibration')
     parser.add_argument('--cross_attention', action='store_true', help='Enable cross-attention late fusion block')
+    parser.add_argument('--sequence_len', type=int, default=4, help='Sequence length for temporal modeling (default: 4 for baseline)')
+    parser.add_argument('--conformer', action='store_true', help='Use Conformer instead of BiLSTM for sequence modeling')
     args = parser.parse_args()
     
     run_experiment(
@@ -659,7 +666,9 @@ def main():
         min_se=args.min_se,
         weighted_loss=args.weighted_loss,
         calib_metric=args.calib_metric,
-        cross_attention=args.cross_attention
+        cross_attention=args.cross_attention,
+        sequence_len=args.sequence_len,
+        use_conformer=args.conformer
     )
 
 if __name__ == "__main__":

@@ -32,14 +32,15 @@ def test_models():
     print(f"Pathology logits shape: {path_logits.shape} (Expected: [{batch_size}, 3])")
     print("Success!\n")
     
-    # 2. Test CNNLSTMResNet with cross-attention
-    print("--- Testing CNNLSTMResNet (cross_attention=True) ---")
+    # 2. Test CNNLSTMResNet with cross-attention and default sequence_len=4
+    print("--- Testing CNNLSTMResNet (cross_attention=True, sequence_len=4) ---")
     model_resnet_hybrid = CNNLSTMResNet(
         in_channels=in_channels,
         num_classes=num_classes,
         pretrained=False,
         multitask=True,
-        cross_attention=True
+        cross_attention=True,
+        sequence_len=4
     )
     model_resnet_hybrid.eval()
     with torch.no_grad():
@@ -47,8 +48,44 @@ def test_models():
     print(f"Cycle logits shape: {cycle_logits.shape} (Expected: [{batch_size}, {num_classes}])")
     print(f"Pathology logits shape: {path_logits.shape} (Expected: [{batch_size}, 3])")
     print("Success!\n")
+
+    # 3. Test CNNLSTMResNet with cross-attention and high-resolution sequence_len=32
+    print("--- Testing CNNLSTMResNet (cross_attention=True, sequence_len=32, use_conformer=False) ---")
+    model_resnet_highres = CNNLSTMResNet(
+        in_channels=in_channels,
+        num_classes=num_classes,
+        pretrained=False,
+        multitask=True,
+        cross_attention=True,
+        sequence_len=32,
+        use_conformer=False
+    )
+    model_resnet_highres.eval()
+    with torch.no_grad():
+        cycle_logits, path_logits = model_resnet_highres(mock_input)
+    print(f"Cycle logits shape: {cycle_logits.shape} (Expected: [{batch_size}, {num_classes}])")
+    print(f"Pathology logits shape: {path_logits.shape} (Expected: [{batch_size}, 3])")
+    print("Success!\n")
+
+    # 4. Test CNNLSTMResNet with cross-attention, high-res sequence_len=32 and Conformer modeling
+    print("--- Testing CNNLSTMResNet (cross_attention=True, sequence_len=32, use_conformer=True) ---")
+    model_resnet_conformer = CNNLSTMResNet(
+        in_channels=in_channels,
+        num_classes=num_classes,
+        pretrained=False,
+        multitask=True,
+        cross_attention=True,
+        sequence_len=32,
+        use_conformer=True
+    )
+    model_resnet_conformer.eval()
+    with torch.no_grad():
+        cycle_logits, path_logits = model_resnet_conformer(mock_input)
+    print(f"Cycle logits shape: {cycle_logits.shape} (Expected: [{batch_size}, {num_classes}])")
+    print(f"Pathology logits shape: {path_logits.shape} (Expected: [{batch_size}, 3])")
+    print("Success!\n")
     
-    # 3. Test BaselineCNNPANN with cross-attention
+    # 5. Test BaselineCNNPANN with cross-attention
     print("--- Testing BaselineCNNPANN (cross_attention=True) ---")
     model_pann_cnn = BaselineCNNPANN(
         in_channels=in_channels,
@@ -64,18 +101,20 @@ def test_models():
     print(f"Pathology logits shape: {path_logits.shape} (Expected: [{batch_size}, 3])")
     print("Success!\n")
     
-    # 4. Test CNNLSTMPANN with cross-attention
-    print("--- Testing CNNLSTMPANN (cross_attention=True) ---")
-    model_pann_hybrid = CNNLSTMPANN(
+    # 6. Test CNNLSTMPANN with cross-attention and Conformer modeling (sequence_len=64)
+    print("--- Testing CNNLSTMPANN (cross_attention=True, sequence_len=64, use_conformer=True) ---")
+    model_pann_conformer = CNNLSTMPANN(
         in_channels=in_channels,
         num_classes=num_classes,
         pretrained=False,
         multitask=True,
-        cross_attention=True
+        cross_attention=True,
+        sequence_len=64,
+        use_conformer=True
     )
-    model_pann_hybrid.eval()
+    model_pann_conformer.eval()
     with torch.no_grad():
-        cycle_logits, path_logits = model_pann_hybrid(mock_input)
+        cycle_logits, path_logits = model_pann_conformer(mock_input)
     print(f"Cycle logits shape: {cycle_logits.shape} (Expected: [{batch_size}, {num_classes}])")
     print(f"Pathology logits shape: {path_logits.shape} (Expected: [{batch_size}, 3])")
     print("Success!\n")
