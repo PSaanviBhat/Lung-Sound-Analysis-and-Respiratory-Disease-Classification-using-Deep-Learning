@@ -138,8 +138,4 @@ The table below contrasts our final model configurations (incorporating Cross-At
 
 ## 6. Journal Publication Resources
 
-To assist in your writing, generate a fully formatted Microsoft Word document containing a complete publication draft (Title, Abstract, Introduction, Methodology, Results, and Discussion) based on our experimental data:
-```bash
-python scratch/generate_journal_paper.py
-```
-This will save `Respiratory_Disease_Classification_Journal_Paper.docx` in the project root folder.
+A fully formatted Microsoft Word document containing a complete publication draft (Title, Abstract, Introduction, Methodology, Results, and Discussion) based on our experimental data: `Respiratory_Disease_Classification.docx` is in the reports folder.
